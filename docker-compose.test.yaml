@@ -1,0 +1,43 @@
+name: medhead-tests
+
+services:
+  database:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    environment:
+      POSTGRES_DB: hospital_test
+      POSTGRES_USER: hospital_test
+      POSTGRES_PASSWORD: hospital_test
+    ports:
+      - "127.0.0.1:${TEST_POSTGRES_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hospital_test -d hospital_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-tls:
+    extends:
+      file: docker-compose.yaml
+      service: redis-tls
+
+  redis:
+    extends:
+      file: docker-compose.yaml
+      service: redis
+    environment:
+      REDIS_PASSWORD: medhead_redis_test
+    ports:
+      - "127.0.0.1:${TEST_REDIS_PORT:-56379}:6379"
+
+volumes:
+  redis-data:
+  redis-tls:
+  redis-ca:
+
+networks:
+  backend:

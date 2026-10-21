@@ -1,0 +1,8 @@
+\set ON_ERROR_STOP on
+
+BEGIN;
+
+DELETE FROM hospital
+WHERE code LIKE 'PERF-%';
+
+COMMIT;

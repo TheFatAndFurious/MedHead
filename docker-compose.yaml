@@ -1,0 +1,228 @@
+name: medhead
+
+services:
+  database:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hospital}
+      POSTGRES_USER: ${POSTGRES_USER:-hospital_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgis-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - backend
+
+  redis-tls:
+    build:
+      context: .
+      dockerfile: docker/redis/Dockerfile
+    image: medhead-redis:8.2.10
+    entrypoint: ["/bin/sh", "/usr/local/bin/generate-tls.sh"]
+    volumes:
+      - redis-tls:/tls
+      - redis-ca:/client-ca
+    network_mode: none
+    restart: "no"
+
+  redis:
+    build:
+      context: .
+      dockerfile: docker/redis/Dockerfile
+    image: medhead-redis:8.2.10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-medhead_redis}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    volumes:
+      - redis-data:/data
+      - redis-tls:/tls:ro
+    depends_on:
+      redis-tls:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli --tls --cacert /tls/ca.crt --sni redis -h redis ping | grep -qx PONG
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - backend
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://database:5432/${POSTGRES_DB:-hospital}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hospital_app}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-validate}
+      SPRING_FLYWAY_ENABLED: ${SPRING_FLYWAY_ENABLED:-true}
+      SPRING_PROFILES_ACTIVE: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-medhead_redis}
+      REDIS_CA_CERT: file:/etc/redis-ca/ca.crt
+      MEDHEAD_EVENTS_STREAM_KEY: ${REDIS_STREAM_KEY:-medhead:reservations}
+      MEDHEAD_EVENTS_STREAM_MAX_LENGTH: ${REDIS_STREAM_MAXLEN:-10000}
+      MEDHEAD_EVENTS_STREAM_CONSUMER_GROUPS: ${REDIS_STREAM_CONSUMER_GROUPS:-reservation-consumers}
+      MEDHEAD_OUTBOX_ENABLED: ${MEDHEAD_OUTBOX_ENABLED:-true}
+      MEDHEAD_OUTBOX_POLL_DELAY: ${MEDHEAD_OUTBOX_POLL_DELAY:-1000}
+      MEDHEAD_OUTBOX_BATCH_SIZE: ${MEDHEAD_OUTBOX_BATCH_SIZE:-100}
+      SERVER_PORT: 8080
+    volumes:
+      - redis-ca:/etc/redis-ca:ro
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - backend
+
+  seed:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+    volumes:
+      - ./docker/seed:/seed:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - psql
+      - --host=database
+      - --username=${POSTGRES_USER:-hospital_app}
+      - --dbname=${POSTGRES_DB:-hospital}
+      - --set=ON_ERROR_STOP=1
+      - --file=/seed/seed-demo.sql
+    restart: "no"
+    networks:
+      - backend
+
+  reset-seed:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    profiles:
+      - maintenance
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+    volumes:
+      - ./docker/seed:/seed:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - psql
+      - --host=database
+      - --username=${POSTGRES_USER:-hospital_app}
+      - --dbname=${POSTGRES_DB:-hospital}
+      - --set=ON_ERROR_STOP=1
+      - --file=/seed/reset-demo.sql
+    restart: "no"
+    networks:
+      - backend
+
+  seed-load:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    profiles:
+      - performance
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+    volumes:
+      - ./docker/seed:/seed:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - psql
+      - --host=database
+      - --username=${POSTGRES_USER:-hospital_app}
+      - --dbname=${POSTGRES_DB:-hospital}
+      - --set=ON_ERROR_STOP=1
+      - --file=/seed/seed-load.sql
+    restart: "no"
+    networks:
+      - backend
+
+  clear-load:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    profiles:
+      - maintenance
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+    volumes:
+      - ./docker/seed:/seed:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - psql
+      - --host=database
+      - --username=${POSTGRES_USER:-hospital_app}
+      - --dbname=${POSTGRES_DB:-hospital}
+      - --set=ON_ERROR_STOP=1
+      - --file=/seed/clear-load.sql
+    restart: "no"
+    networks:
+      - backend
+
+  pgadmin:
+    image: dpage/pgadmin4:9.18
+    profiles:
+      - tools
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.test}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_DISABLE_POSTFIX: "true"
+    ports:
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - backend
+
+volumes:
+  postgis-data:
+  pgadmin-data:
+  redis-data:
+  redis-tls:
+  redis-ca:
+
+networks:
+  backend:
+    driver: bridge
