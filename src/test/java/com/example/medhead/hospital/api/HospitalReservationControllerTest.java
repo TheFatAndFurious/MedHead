@@ -95,7 +95,7 @@ class HospitalReservationControllerTest {
 
 	private static final class StubReservationService extends ReserveNearestAvailableBedService {
 
-		private Function<HospitalSearchRequest, HospitalReservationResponse> behaviour = request -> {
+		private Function<HospitalReservationRequest, HospitalReservationResponse> behaviour = request -> {
 			throw new AssertionError("Reservation service should not have been called");
 		};
 		private int callCount;
@@ -105,7 +105,7 @@ class HospitalReservationControllerTest {
 		}
 
 		@Override
-		public HospitalReservationResponse reserveNearest(HospitalSearchRequest request) {
+		public HospitalReservationResponse reserveNearest(HospitalReservationRequest request) {
 			callCount++;
 			return behaviour.apply(request);
 		}

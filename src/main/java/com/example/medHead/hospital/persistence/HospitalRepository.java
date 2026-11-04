@@ -13,12 +13,6 @@ public interface HospitalRepository extends JpaRepository<Hospital, Long> {
 
 	@Query(value = """
 			select hospital.id as "hospitalId",
-			       hospital.code as "hospitalCode",
-			       hospital.name as "hospitalName",
-			       ST_Y(hospital.location::geometry) as latitude,
-			       ST_X(hospital.location::geometry) as longitude,
-			       hospital.total_beds as "totalBeds",
-			       hospital.available_beds as "availableBeds",
 			       ST_Distance(
 			           hospital.location,
 			           ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography

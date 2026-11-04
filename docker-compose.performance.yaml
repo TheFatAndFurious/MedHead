@@ -1,0 +1,46 @@
+name: medhead-performance
+
+services:
+  database:
+    extends:
+      file: docker-compose.yaml
+      service: database
+    environment:
+      POSTGRES_DB: hospital_performance
+      POSTGRES_USER: hospital_perf
+      POSTGRES_PASSWORD: hospital_perf
+    ports: !override []
+
+  redis-tls:
+    extends:
+      file: docker-compose.yaml
+      service: redis-tls
+
+  redis:
+    extends:
+      file: docker-compose.yaml
+      service: redis
+    environment:
+      REDIS_PASSWORD: medhead_perf
+
+  api:
+    extends:
+      file: docker-compose.yaml
+      service: api
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://database:5432/hospital_performance
+      SPRING_DATASOURCE_USERNAME: hospital_perf
+      SPRING_DATASOURCE_PASSWORD: hospital_perf
+      REDIS_PASSWORD: medhead_perf
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics
+    ports: !override
+      - "127.0.0.1:58080:8080"
+
+volumes:
+  postgis-data:
+  redis-data:
+  redis-tls:
+  redis-ca:
+
+networks:
+  backend:

@@ -83,7 +83,7 @@ services:
       MEDHEAD_EVENTS_STREAM_MAX_LENGTH: ${REDIS_STREAM_MAXLEN:-10000}
       MEDHEAD_EVENTS_STREAM_CONSUMER_GROUPS: ${REDIS_STREAM_CONSUMER_GROUPS:-reservation-consumers}
       MEDHEAD_OUTBOX_ENABLED: ${MEDHEAD_OUTBOX_ENABLED:-true}
-      MEDHEAD_OUTBOX_POLL_DELAY: ${MEDHEAD_OUTBOX_POLL_DELAY:-1000}
+      MEDHEAD_OUTBOX_RETRY_DELAY: ${MEDHEAD_OUTBOX_RETRY_DELAY:-1000}
       MEDHEAD_OUTBOX_BATCH_SIZE: ${MEDHEAD_OUTBOX_BATCH_SIZE:-100}
       SERVER_PORT: 8080
     volumes:
@@ -96,6 +96,17 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
+    networks:
+      - backend
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/static:/app/static
     networks:
       - backend
 

@@ -16,4 +16,7 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
 			for update skip locked
 			""", nativeQuery = true)
 	Optional<OutboxEvent> findNextPending();
+
+	@Query(value = "select exists (select 1 from event_outbox where published_at is null)", nativeQuery = true)
+	boolean hasPending();
 }

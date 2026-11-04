@@ -1,7 +1,7 @@
 package com.example.medhead.hospital.application;
 
 import com.example.medhead.hospital.api.HospitalReservationResponse;
-import com.example.medhead.hospital.api.HospitalSearchRequest;
+import com.example.medhead.hospital.api.HospitalReservationRequest;
 import com.example.medhead.hospital.domain.BedReservation;
 import com.example.medhead.hospital.domain.Hospital;
 import com.example.medhead.hospital.persistence.BedReservationRepository;
@@ -41,7 +41,7 @@ public class ReserveNearestAvailableBedService {
 	}
 
 	@Transactional
-	public HospitalReservationResponse reserveNearest(HospitalSearchRequest request) {
+	public HospitalReservationResponse reserveNearest(HospitalReservationRequest request) {
 		String specialtyCode = request.specialtyCode().trim();
 		NearestHospitalProjection nearest = reserveAvailableHospital(request, specialtyCode);
 		// The successful UPDATE holds the row lock until commit. Reload the actual
@@ -70,7 +70,7 @@ public class ReserveNearestAvailableBedService {
 		);
 	}
 
-	private NearestHospitalProjection reserveAvailableHospital(HospitalSearchRequest request, String specialtyCode) {
+	private NearestHospitalProjection reserveAvailableHospital(HospitalReservationRequest request, String specialtyCode) {
 		while (true) {
 			NearestHospitalProjection nearest = hospitalRepository.findNearestAvailable(
 					request.latitude(), request.longitude(), specialtyCode

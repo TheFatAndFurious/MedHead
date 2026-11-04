@@ -1,15 +1,18 @@
 package com.example.medhead.outbox;
 
 import com.example.medhead.hospital.api.HospitalReservationResponse;
-import com.example.medhead.hospital.api.HospitalSearchRequest;
+import com.example.medhead.hospital.api.HospitalReservationRequest;
 import com.example.medhead.hospital.application.ReserveNearestAvailableBedService;
 import io.lettuce.core.SslVerifyMode;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.postgresql.PGConnection;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -23,6 +26,7 @@ import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -30,9 +34,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -40,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -56,7 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 		"medhead.events.stream.key=medhead:test:outbox",
 		"medhead.events.stream.max-length=2",
 		"medhead.events.stream.consumer-groups=outbox-consumers,outbox-audit",
-		"medhead.outbox.scheduling-enabled=false"
+		"medhead.outbox.dispatcher-enabled=false"
 })
 @AutoConfigureMockMvc
 class OutboxPublicationIntegrationTest {
@@ -77,6 +84,12 @@ class OutboxPublicationIntegrationTest {
 	private PlatformTransactionManager transactionManager;
 	@Autowired
 	private MockMvc mockMvc;
+	@Autowired
+	private OutboxMetrics metrics;
+	@Autowired
+	private MeterRegistry registry;
+	@Autowired
+	private DataSourceProperties database;
 
 	@BeforeEach
 	void setUp() {
@@ -120,6 +133,130 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	@Test
+	void recordsDatabaseAndRedisStepsAndSeparatesEmptyPolls() {
+		double createdGroups = registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count();
+		double existingGroups = registry.get("outbox.redis.group.duration").tag("outcome", "existing").timer().count();
+		double sent = registry.get("outbox.redis.add.duration").tag("outcome", "success").timer().count();
+		double found = registry.get("outbox.select.duration").tag("outcome", "found").timer().count();
+		double published = registry.get("outbox.event.duration").tag("outcome", "published").timer().count();
+		double empty = registry.get("outbox.event.duration").tag("outcome", "empty").timer().count();
+		insertEvent();
+		insertEvent();
+
+		new OutboxPublisher(publicationService, 3, metrics).publishPending();
+
+		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count() - createdGroups).isEqualTo(2);
+		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "existing").timer().count() - existingGroups).isEqualTo(2);
+		assertThat(registry.get("outbox.redis.add.duration").tag("outcome", "success").timer().count() - sent).isEqualTo(2);
+		assertThat(registry.get("outbox.select.duration").tag("outcome", "found").timer().count() - found).isEqualTo(2);
+		assertThat(registry.get("outbox.event.duration").tag("outcome", "published").timer().count() - published).isEqualTo(2);
+		assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count() - empty).isEqualTo(1);
+		assertThat(pendingCount()).isZero();
+	}
+
+	@Test
+	void notifiesOnlyAfterCommitAndNeverAfterRollback() throws Exception {
+		try (Connection connection = notificationsDataSource().getConnection()) {
+			connection.createStatement().execute("LISTEN medhead_outbox");
+			PGConnection postgres = connection.unwrap(PGConnection.class);
+			TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+			transaction.executeWithoutResult(status -> {
+				insertEvent();
+				try {
+					assertThat(postgres.getNotifications(100)).isEmpty();
+				} catch (java.sql.SQLException exception) {
+					throw new IllegalStateException(exception);
+				}
+			});
+			assertThat(postgres.getNotifications(2000)).hasSize(1);
+			transaction.executeWithoutResult(status -> {
+				insertEvent();
+				status.setRollbackOnly();
+			});
+			assertThat(postgres.getNotifications(100)).isEmpty();
+		}
+	}
+
+	@Test
+	void sleepsWithoutRepeatedOutboxReadsAndWakesOnInsertion() {
+		long empty = registry.get("outbox.event.duration").tag("outcome", "empty").timer().count();
+		try (OutboxNotificationListener listener = listener()) {
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+					assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
+			await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+					assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
+			insertEvent();
+			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
+			assertThat(records()).hasSize(1);
+		}
+		await().atMost(Duration.ofSeconds(2)).until(() -> listenerPid() == null);
+	}
+
+	@Test
+	void drainsMultipleBatchesOnStartupWithoutNeedingANotification() {
+		for (int i = 0; i < 5; i++) insertEvent();
+		try (OutboxNotificationListener listener = listener()) {
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
+			assertThat(records()).hasSize(5);
+		}
+	}
+
+	@Test
+	void reconnectsAndCatchesUpOnEventsInsertedDuringTheDisconnection() {
+		try (OutboxNotificationListener listener = listener()) {
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).until(() -> listenerPid() != null);
+			int oldPid = listenerPid();
+			assertThat(jdbc.queryForObject("select pg_terminate_backend(?)", Boolean.class, oldPid)).isTrue();
+			insertEvent();
+			await().atMost(Duration.ofSeconds(3)).until(() -> listenerPid() != null && listenerPid() != oldPid);
+			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
+			assertThat(records()).hasSize(1);
+		}
+	}
+
+	@Test
+	void retriesACommitFailureWithoutWaitingForAnotherInsertion() {
+		OutboxEvent event = insertEvent();
+		jdbc.execute("""
+				alter table event_outbox add constraint test_reject_publication
+				check (event_type <> 'OutboxTest' or published_at is null)
+				""");
+		double errors = registry.get("outbox.event.duration").tag("outcome", "error").timer().count();
+		try (OutboxNotificationListener listener = listener()) {
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).until(() ->
+					registry.get("outbox.event.duration").tag("outcome", "error").timer().count() > errors);
+			jdbc.execute("alter table event_outbox drop constraint test_reject_publication");
+			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
+			assertThat(records()).allSatisfy(record ->
+					assertThat(record.getValue()).containsEntry("eventId", event.getId().toString()));
+		}
+	}
+
+	@Test
+	void retriesRowsLockedByAnotherPublisherWithoutWaitingForAnotherInsertion() throws Exception {
+		OutboxEvent event = insertEvent();
+		try (Connection locking = notificationsDataSource().getConnection();
+				OutboxNotificationListener listener = listener()) {
+			locking.setAutoCommit(false);
+			try (var statement = locking.prepareStatement("select id from event_outbox where id = ? for update")) {
+				statement.setObject(1, event.getId());
+				statement.executeQuery().close();
+			}
+			double empty = registry.get("outbox.event.duration").tag("outcome", "empty").timer().count();
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).until(() ->
+					registry.get("outbox.event.duration").tag("outcome", "empty").timer().count() > empty);
+			assertThat(pendingCount()).isEqualTo(1);
+			locking.rollback();
+			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
+		}
+	}
+
+	@Test
 	void doesNotPublishAnUncommittedOrRolledBackReservation() {
 		TransactionTemplate transaction = new TransactionTemplate(transactionManager);
 		transaction.executeWithoutResult(status -> {
@@ -142,7 +279,7 @@ class OutboxPublicationIntegrationTest {
 			redis.setConnectionFactory(unavailable);
 			HospitalReservationResponse reservation = reserveBed();
 			assertThat(reservation.availableBeds()).isZero();
-			new OutboxPublisher(publicationService, 10).publishPending();
+			new OutboxPublisher(publicationService, 10, metrics).publishPending();
 			assertThat(pendingCount()).isEqualTo(1);
 			mockMvc.perform(get("/actuator/health/readiness")).andExpect(status().isOk());
 		} finally {
@@ -200,11 +337,11 @@ class OutboxPublicationIntegrationTest {
 		insertEvent();
 		insertEvent();
 
-		new OutboxPublisher(publicationService, 2).publishPending();
+		new OutboxPublisher(publicationService, 2, metrics).publishPending();
 
 		assertThat(pendingCount()).isEqualTo(1);
 		assertThat(records()).hasSize(2);
-		new OutboxPublisher(publicationService, 2).publishPending();
+		new OutboxPublisher(publicationService, 2, metrics).publishPending();
 		assertThat(pendingCount()).isZero();
 		assertThat(records()).hasSize(3);
 	}
@@ -270,6 +407,25 @@ class OutboxPublicationIntegrationTest {
 		return event;
 	}
 
+	private OutboxNotificationListener listener() {
+		return new OutboxNotificationListener(notificationsDataSource(),
+				new OutboxPublisher(publicationService, 2, metrics), publicationService, 50);
+	}
+
+	private DriverManagerDataSource notificationsDataSource() {
+		DriverManagerDataSource source = new DriverManagerDataSource(
+				database.determineUrl(), database.determineUsername(), database.determinePassword());
+		Properties properties = new Properties();
+		properties.setProperty("ApplicationName", "medhead-outbox-listener-test");
+		source.setConnectionProperties(properties);
+		return source;
+	}
+
+	private Integer listenerPid() {
+		return jdbc.queryForObject("select max(pid) from pg_stat_activity where application_name = 'medhead-outbox-listener-test'",
+				Integer.class);
+	}
+
 	private HospitalReservationResponse reserveBed() {
 		jdbc.update("insert into specialty (code, name) values (?, ?)", SPECIALTY, "Outbox test");
 		long hospitalId = jdbc.queryForObject("""
@@ -278,7 +434,7 @@ class OutboxPublicationIntegrationTest {
 				returning id
 				""", Long.class);
 		jdbc.update("insert into hospital_specialty (hospital_id, specialty_id) select ?, id from specialty where code = ?", hospitalId, SPECIALTY);
-		return reservationService.reserveNearest(new HospitalSearchRequest(51.5074, -0.1278, SPECIALTY));
+		return reservationService.reserveNearest(new HospitalReservationRequest(51.5074, -0.1278, SPECIALTY));
 	}
 
 	private int pendingCount() {

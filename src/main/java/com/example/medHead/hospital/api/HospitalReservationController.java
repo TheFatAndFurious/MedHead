@@ -26,7 +26,7 @@ public class HospitalReservationController {
 			produces = MediaType.APPLICATION_JSON_VALUE
 	)
 	@ResponseStatus(HttpStatus.CREATED)
-	public HospitalReservationResponse reserve(@Valid @RequestBody HospitalSearchRequest request) {
+	public HospitalReservationResponse reserve(@Valid @RequestBody HospitalReservationRequest request) {
 		return reservationService.reserveNearest(request);
 	}
 }

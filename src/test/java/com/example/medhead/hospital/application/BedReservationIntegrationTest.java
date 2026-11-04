@@ -1,7 +1,7 @@
 package com.example.medhead.hospital.application;
 
 import com.example.medhead.hospital.api.HospitalReservationResponse;
-import com.example.medhead.hospital.api.HospitalSearchRequest;
+import com.example.medhead.hospital.api.HospitalReservationRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +40,7 @@ class BedReservationIntegrationTest {
 	private static final String SPECIALTY = "RESERVATION_TEST";
 	private static final String NEAREST_CODE = "TEST-RESERVE-NEAREST";
 	private static final String FARTHER_CODE = "TEST-RESERVE-FARTHER";
-	private static final HospitalSearchRequest REQUEST = new HospitalSearchRequest(
+	private static final HospitalReservationRequest REQUEST = new HospitalReservationRequest(
 			51.5074, -0.1278, SPECIALTY
 	);
 
@@ -82,6 +82,7 @@ class BedReservationIntegrationTest {
 				.andReturn().getResponse().getContentAsString();
 		HospitalReservationResponse response = jsonMapper.readValue(body, HospitalReservationResponse.class);
 
+		assertThat(response.distanceMeters()).isPositive();
 		assertThat(availableBeds(NEAREST_CODE)).isEqualTo(2);
 		assertThat(availableBeds(FARTHER_CODE)).isEqualTo(3);
 		assertThat(reservationCount()).isEqualTo(1);
@@ -103,17 +104,6 @@ class BedReservationIntegrationTest {
 		assertThat(event.hospitalCode()).isEqualTo(NEAREST_CODE);
 		assertThat(event.specialtyCode()).isEqualTo(SPECIALTY);
 		assertThat(event.occurredAt()).isEqualTo(response.reservedAt());
-	}
-
-	@Test
-	void keepsSearchReadOnly() throws Exception {
-		mockMvc.perform(post("/api/v1/hospitals/search")
-					.contentType(MediaType.APPLICATION_JSON).content(requestJson(SPECIALTY)))
-				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.hospitalCode").value(NEAREST_CODE))
-				.andExpect(jsonPath("$.availableBeds").value(3));
-		assertThat(availableBeds(NEAREST_CODE)).isEqualTo(3);
-		assertNoReservationOrEvent();
 	}
 
 	@Test

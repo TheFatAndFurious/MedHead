@@ -7,7 +7,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
-public record HospitalSearchRequest(
+public record HospitalReservationRequest(
 		@NotNull(message = "Latitude is required")
 		@DecimalMin(value = "-90.0", message = "Latitude must be greater than or equal to -90")
 		@DecimalMax(value = "90.0", message = "Latitude must be less than or equal to 90")

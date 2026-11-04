@@ -8,7 +8,7 @@ Créer le fichier de configuration locale :
 cp .env.example .env
 ```
 
-Démarrer PostGIS, Redis et l'API :
+Démarrer PostGIS, Redis, l'API et le front-end :
 
 ```bash
 docker compose up --build
@@ -19,29 +19,26 @@ L'API est accessible sur <http://localhost:8080> et son état sur
 schéma, charge les 80 spécialités du référentiel NHS, puis Docker ajoute 12
 hôpitaux fictifs répartis dans le Grand Londres.
 
-## Recherche de l'hôpital disponible le plus proche
+Le front-end SvelteKit est accessible sur <http://localhost:5173>.
+Il fournit pour l’instant une page d’accueil, sans parcours de réservation.
+Les modifications de `frontend/src` et `frontend/static` sont prises en compte
+sans reconstruire l’image. `FRONTEND_PORT` permet de changer le port local.
 
-L'API expose une recherche PostGIS paramétrée :
+Pour démarrer uniquement le front-end, sans l’API ni les bases de données :
 
 ```bash
-curl --request POST http://localhost:8080/api/v1/hospitals/search \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "latitude": 51.5074,
-    "longitude": -0.1278,
-    "specialtyCode": "CARDIOLOGY"
-  }'
+docker compose up --build frontend
 ```
 
-La réponse contient l'hôpital disponible le plus proche et sa distance en
-mètres. Une spécialité inconnue renvoie `400 Bad Request`; une spécialité valide
-sans hôpital disponible renvoie `404 Not Found`.
+Le conteneur utilise le serveur de développement. La configuration et les
+commandes de vérification sont décrites dans le
+[guide du front-end](frontend/README.md).
 
 ## Réservation d'un lit et outbox
 
-La recherche `/search` ne modifie aucune disponibilité. Pour rechercher puis
-réserver un lit dans l'hôpital disponible le plus proche, envoyer les mêmes
-critères à :
+L'API réserve un lit dans l'hôpital disponible le plus proche possédant la
+spécialité demandée. La sélection utilise une requête PostGIS paramétrée.
+Pour effectuer une réservation :
 
 ```bash
 curl --request POST http://localhost:8080/api/v1/hospitals/reservations \
@@ -55,9 +52,9 @@ curl --request POST http://localhost:8080/api/v1/hospitals/reservations \
 
 Une réservation réussie renvoie `201 Created`, avec les informations de
 l'hôpital, `reservationId`, `reservedAt` et le nombre de lits disponibles
-**après** réservation. La capacité totale reste inchangée. Les erreurs restent
-les mêmes que pour la recherche : `400 Bad Request` pour des critères invalides
-ou une spécialité inconnue, `404 Not Found` si aucun lit n'est disponible.
+**après** réservation, ainsi que la distance en mètres. La capacité totale
+reste inchangée. Des critères invalides ou une spécialité inconnue renvoient
+`400 Bad Request` ; l'absence de lit disponible renvoie `404 Not Found`.
 Chaque appel réussi crée une nouvelle réservation.
 
 Une seule transaction PostgreSQL effectue les trois écritures :
@@ -85,9 +82,17 @@ ORDER BY occurred_at, id;
 ```
 
 Le profil Spring `redis`, activé automatiquement dans Docker, publie les
-événements en arrière-plan. Toutes les secondes, il traite au maximum 100
-événements en attente. `MEDHEAD_OUTBOX_POLL_DELAY` (millisecondes) et
-`MEDHEAD_OUTBOX_BATCH_SIZE` (de 1 à 1 000) permettent de régler ces valeurs.
+événements en arrière-plan. Un trigger PostgreSQL émet une notification
+`medhead_outbox` après le commit d'une insertion dans l'outbox. Le dispatcher
+l'écoute sur une connexion dédiée et enchaîne des lots de 100 événements
+jusqu'à épuisement, puis reste bloqué en attente d'une notification, sans
+interrogation périodique de la table. Il s'abonne avant de lire les événements
+déjà présents au démarrage ou après une reconnexion.
+`MEDHEAD_OUTBOX_BATCH_SIZE` (de 1 à 1 000) règle la taille des lots.
+`MEDHEAD_OUTBOX_RETRY_DELAY` (millisecondes, 1 000 par défaut) règle uniquement
+l'attente avant une nouvelle tentative après une erreur ou lorsqu'un événement
+en attente est verrouillé par un autre publieur. Il remplace l'ancien réglage
+`MEDHEAD_OUTBOX_POLL_DELAY`.
 `MEDHEAD_OUTBOX_ENABLED=false` suspend la publication tout en conservant
 l'enregistrement des réservations et des événements dans PostgreSQL.
 
@@ -96,7 +101,7 @@ pour que plusieurs instances de l'API puissent publier sans sélectionner la
 même ligne simultanément. Le publieur envoie l'événement en TLS, attend la
 confirmation de `XADD`, puis renseigne `published_at`. Les lignes publiées sont
 conservées dans PostgreSQL. En cas d'échec, la transaction de cet événement est
-annulée et une nouvelle tentative a lieu au prochain passage ; les publications
+annulée et une nouvelle tentative est différée ; les publications
 précédentes du lot restent validées.
 
 La livraison suit une garantie **au moins une fois** : si Redis accepte l'envoi
@@ -388,6 +393,11 @@ docker compose --profile maintenance run --rm clear-load
 
 Les réservations des hôpitaux de charge supprimés sont également supprimées,
 mais leurs événements outbox restent conservés.
+
+Les scénarios k6 et leur environnement isolé sont décrits dans le
+[guide des tests de charge](tests/performance/README.md). Ils couvrent les
+réservations réussies et les refus faute de lit, à 80 req/s avec un pic à
+800 req/s et un objectif p95 inférieur à 200 ms.
 
 Pour démarrer également pgAdmin :
 
