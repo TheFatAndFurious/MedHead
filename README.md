@@ -20,19 +20,50 @@ schéma, charge les 80 spécialités du référentiel NHS, puis Docker ajoute 12
 hôpitaux fictifs répartis dans le Grand Londres.
 
 Le front-end SvelteKit est accessible sur <http://localhost:5173>.
-Il fournit pour l’instant une page d’accueil, sans parcours de réservation.
+Il propose une liste de lieux de démonstration dans le Grand Londres et charge
+les spécialités depuis l’API. Le bouton « Réserver un lit » envoie la demande
+et affiche l’hôpital retenu, la distance et la référence de réservation.
+Chaque réussite consomme un lit du jeu de démonstration.
 Les modifications de `frontend/src` et `frontend/static` sont prises en compte
 sans reconstruire l’image. `FRONTEND_PORT` permet de changer le port local.
 
-Pour démarrer uniquement le front-end, sans l’API ni les bases de données :
+Pour démarrer uniquement le front-end :
 
 ```bash
 docker compose up --build frontend
 ```
 
+L’API doit déjà être démarrée pour charger les spécialités et réserver un lit.
+Sinon, la page affiche un message et permet de recharger les spécialités.
+
 Le conteneur utilise le serveur de développement. La configuration et les
 commandes de vérification sont décrites dans le
 [guide du front-end](frontend/README.md).
+
+## Hôpitaux et spécialités pour le front-end
+
+Deux routes de lecture fournissent les données de la carte et du formulaire :
+
+```bash
+curl http://localhost:8080/api/v1/hospitals
+curl http://localhost:8080/api/v1/specialties
+```
+
+Les deux routes renvoient `200 OK` avec un tableau JSON trié par nom, puis par
+code en cas d’égalité. Un catalogue vide renvoie `[]`.
+
+`GET /api/v1/hospitals` fournit `id`, `code`, `name`, `latitude` et `longitude`
+pour chaque hôpital, y compris ceux sans lit disponible. Les coordonnées sont
+en degrés WGS84. Cette route sert à placer les hôpitaux sur la carte ; elle ne
+recherche pas un hôpital et ne réserve aucun lit.
+
+`GET /api/v1/specialties` fournit `code` et `name` pour toutes les spécialités
+du référentiel, même celles sans hôpital associé. Le front-end affiche `name`
+et transmet `code` lors de la réservation.
+
+Les listes reflètent les données présentes dans la base : normalement les
+12 hôpitaux de démonstration et les 80 spécialités. Les hôpitaux du jeu de charge
+apparaissent aussi si ce jeu a été chargé dans la même base.
 
 ## Réservation d'un lit et outbox
 
@@ -237,7 +268,9 @@ Les tests sans base de données se lancent avec :
 
 Les tests PostgreSQL utilisent une base PostGIS dédiée, éphémère, sur le port
 `55432`. Ils vérifient la transaction, le rollback en cas d'échec de l'outbox,
-la réservation concurrente du dernier lit et la sélection de l'hôpital suivant :
+la réservation concurrente du dernier lit et la sélection de l'hôpital suivant.
+Ils couvrent aussi les catalogues d’hôpitaux et de spécialités : coordonnées,
+tri, listes vides et absence de réservation lors de la lecture.
 
 ```bash
 docker compose -f docker-compose.test.yaml up --build -d --wait database
@@ -290,8 +323,9 @@ Les étapes s'exécutent dans cet ordre :
 3. Copier le certificat public de Redis dans `.local/redis-tests/ca.crt`.
 4. Exécuter `clean verify` avec les deux propriétés d'intégration activées :
    les tests unitaires et d'intégration sont exécutés, puis le JAR est créé.
-5. Vérifier les rapports JUnit de `BedReservationIntegrationTest` et
-   `OutboxPublicationIntegrationTest`. Le job échoue si un rapport manque,
+5. Vérifier les rapports JUnit de `HospitalCatalogIntegrationTest`,
+   `BedReservationIntegrationTest` et `OutboxPublicationIntegrationTest`.
+   Le job échoue si un rapport manque,
    si une suite n'a exécuté aucun test ou si elle contient des tests ignorés,
    des échecs ou des erreurs.
 6. Construire l'image `medhead:ci` avec le Dockerfile du dépôt. Sa construction
