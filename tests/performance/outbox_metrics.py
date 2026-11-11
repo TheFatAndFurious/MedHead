@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 import time
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 METRICS = {
     'outbox.batch.duration': ['full', 'empty', 'error'],
@@ -24,13 +24,14 @@ def parse_measurements(payload):
     return values['COUNT'], total, values['MAX']
 
 
-def collect(base_url, previous):
+def collect(base_url, previous, access_token=None):
     rows = []
     for metric, outcomes in METRICS.items():
         for outcome in outcomes:
             query = '?' + urlencode({'tag': f'outcome:{outcome}'}) if outcome else ''
             url = f'{base_url}/actuator/metrics/{metric}{query}'
-            with urlopen(url, timeout=2) as response:
+            request = Request(url, headers={'Authorization': f'Bearer {access_token}'}) if access_token else url
+            with urlopen(request, timeout=2) as response:
                 payload = json.load(response)
             count, total, maximum = parse_measurements(payload)
             now = time.monotonic()

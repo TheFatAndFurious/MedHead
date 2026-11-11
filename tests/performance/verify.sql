@@ -9,6 +9,13 @@ SELECT current_database() = 'hospital_performance' AS isolated \gset
 SELECT
     (SELECT count(*) FROM bed_reservation) = :created
     AND (SELECT count(*) FROM event_outbox) = :created
+    -- One idempotent request record per reservation (reservation_id is unique).
+    AND (SELECT count(*) FROM reservation_request) = :created
+    AND NOT EXISTS (
+        SELECT 1 FROM bed_reservation r
+        LEFT JOIN reservation_request q ON q.reservation_id = r.id
+        WHERE q.reservation_id IS NULL
+    )
     AND (SELECT sum(b.available_beds - h.available_beds)
          FROM hospital h JOIN performance_baseline b ON b.hospital_id = h.id) = :created
     AND NOT EXISTS (

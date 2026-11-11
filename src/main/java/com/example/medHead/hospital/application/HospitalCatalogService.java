@@ -1,7 +1,5 @@
 package com.example.medhead.hospital.application;
 
-import com.example.medhead.hospital.api.HospitalResponse;
-import com.example.medhead.hospital.api.SpecialtyResponse;
 import com.example.medhead.hospital.persistence.HospitalRepository;
 import com.example.medhead.hospital.persistence.SpecialtyRepository;
 import org.springframework.data.domain.Sort;
@@ -22,9 +20,9 @@ public class HospitalCatalogService {
 	}
 
 	@Transactional(readOnly = true)
-	public List<HospitalResponse> listHospitals() {
+	public List<HospitalSummary> listHospitals() {
 		return hospitalRepository.findAll(Sort.by("name", "code")).stream()
-				.map(hospital -> new HospitalResponse(
+				.map(hospital -> new HospitalSummary(
 						hospital.getId(), hospital.getCode(), hospital.getName(),
 						hospital.getLocation().getY(), hospital.getLocation().getX()
 				))
@@ -32,9 +30,9 @@ public class HospitalCatalogService {
 	}
 
 	@Transactional(readOnly = true)
-	public List<SpecialtyResponse> listSpecialties() {
+	public List<SpecialtySummary> listSpecialties() {
 		return specialtyRepository.findAll(Sort.by("name", "code")).stream()
-				.map(specialty -> new SpecialtyResponse(specialty.getCode(), specialty.getName()))
+				.map(specialty -> new SpecialtySummary(specialty.getCode(), specialty.getName()))
 				.toList();
 	}
 }

@@ -85,7 +85,7 @@ Le refus faute de lit a ensuite été observé dans le même navigateur.
 ## 2. Sécurité des échanges front-end / back-end
 
 - [ ] **Les échanges entre le front-end et le back-end sont sécurisés.**
-  - [ ] Définir et vérifier les accès autorisés aux données et aux réservations. Aucun mécanisme d’authentification utilisateur n’est présent. Le PDF impose une protection des données sans prescrire un mécanisme précis.
+  - [ ] Définir et vérifier les accès autorisés aux données et aux réservations. Keycloak, les sessions serveur SvelteKit / Redis et les rôles `LECTEUR` / `REGULATEUR` sont maintenant implémentés. Les tests de sécurité Spring et les tests de session passent ; le parcours complet avec les conteneurs reste à valider. Voir [le guide d’authentification](authentification.md). Le PDF impose une protection des données sans prescrire un mécanisme précis.
   - [x] Vérifier que le back-end contrôle les données reçues : champs requis, bornes des coordonnées, format et longueur du code de spécialité. Les requêtes SQL utilisent des paramètres.
   - [x] Vérifier le chemin des appels : le navigateur communique avec SvelteKit ; le serveur SvelteKit appelle Spring. Le parcours actuel ne nécessite pas un appel du navigateur vers une autre origine API ni une ouverture CORS pour cet échange.
   - [ ] Vérifier le chiffrement des échanges dans l’environnement de démonstration. L’API documentée utilise HTTP ; aucun point d’entrée HTTPS n’est configuré dans ce dépôt.
@@ -118,8 +118,10 @@ dans les réponses, mais ne permet pas non plus de cocher le contrôle des secre
 [image du front-end](../frontend/Dockerfile),
 [dérogation et démarrage documentés](../frontend/README.md).
 La vérification Svelte indique zéro erreur et zéro avertissement. La compilation
-avec l’adaptateur Node réussit. Le service Compose utilise le serveur de
-développement ; le déploiement de production reste un sujet distinct.
+avec l’adaptateur Node réussit. Le service Compose exécute l’application
+compilée avec un utilisateur non privilégié ; le serveur de développement est
+réservé au fichier `docker-compose.dev.yaml`. Le déploiement de production
+(HTTPS, en-têtes de sécurité, secrets) reste un sujet distinct.
 
 ## 4. Back-end Java et architecture microservice
 
@@ -142,7 +144,7 @@ encore un système composé de plusieurs microservices métier déployés.
 ## 5. Bonnes pratiques
 
 - [ ] **Le code applique les bonnes pratiques.**
-  - [x] Vérifier la cohérence du formatage et du nommage dans le code examiné. Les responsabilités sont séparées entre API, application, domaine, persistance et outbox.
+  - [x] Vérifier la cohérence du formatage et du nommage dans le code examiné. Les responsabilités sont séparées entre API, application, domaine, persistance et outbox. Le sens des dépendances (`api` → `application` → `persistence` → `domain`) est vérifié automatiquement par une règle ArchUnit ([test d’architecture](../src/test/java/com/example/medhead/ArchitectureTest.java)) : la couche application ne connaît pas les DTO HTTP.
   - [x] Vérifier l’absence de duplication évitable dans le parcours de réservation examiné. La réservation est centralisée dans un service ; les réponses d’erreur utilisent un gestionnaire commun.
   - [x] Vérifier que les commentaires expliquent les choix utiles à comprendre : verrouillage, concurrence, commit et abonnement aux notifications PostgreSQL.
   - [x] Vérifier la gestion des erreurs et la clarté des messages : erreurs métier structurées et reprise de publication après échec.
@@ -173,8 +175,12 @@ encore un système composé de plusieurs microservices métier déployés.
 Cette revue est qualitative et limitée au code existant. Aucun contrôle automatisé
 de style ou de duplication n’a été exécuté. Les contrôles Svelte / TypeScript et
 la compilation ont été exécutés ; ils ne remplacent pas une analyse de duplication.
-Le front-end évite les relances automatiques et bloque le nouvel envoi en cas de
-confirmation incertaine. Aucun test automatisé de ce comportement n’a été trouvé.
+Le front-end évite les relances automatiques. En cas de confirmation incertaine,
+il propose de renvoyer la même demande avec la même clé `Idempotency-Key` :
+l’API renvoie alors la réservation déjà créée sans consommer de second lit.
+Ce comportement est couvert par les tests de l’action SvelteKit
+(`frontend/tests/page-server.test.ts`) et par les tests d’intégration de la
+réservation (rejeu, clé réutilisée, envois simultanés).
 
 ## 6. Tests du système d’intervention d’urgence
 

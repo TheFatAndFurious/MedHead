@@ -5,10 +5,13 @@ import csv
 from datetime import datetime, timezone
 import fcntl
 import json
+import os
 from pathlib import Path
 import subprocess
 import threading
 from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from outbox_metrics import FIELDS, collect
 
@@ -57,11 +60,18 @@ def main():
         monitor_errors = []
         previous_metrics = {}
 
+        # A dedicated service account exists only in the isolated performance realm.
+        credentials = urlencode({'grant_type': 'client_credentials', 'client_id': 'medhead-load',
+                                 'client_secret': 'medhead_perf_only'}).encode()
+        with urlopen(Request('http://localhost:58180/realms/medhead/protocol/openid-connect/token',
+                             data=credentials), timeout=10) as response:
+            access_token = json.load(response)['access_token']
+
         # Start from a baseline: a reused API may already have cumulative samples.
         with (output / 'outbox-metrics.csv').open('w') as metrics_log:
             writer = csv.DictWriter(metrics_log, fieldnames=FIELDS)
             writer.writeheader()
-            writer.writerows(collect(API_URL, previous_metrics))
+            writer.writerows(collect(API_URL, previous_metrics, access_token))
 
         def monitor():
             with (output / 'outbox.csv').open('w') as log, \
@@ -75,7 +85,7 @@ def main():
                                   "WHERE published_at IS NULL) TO STDOUT WITH CSV;")
                         log.write(row)
                         log.flush()
-                        writer.writerows(collect(API_URL, previous_metrics))
+                        writer.writerows(collect(API_URL, previous_metrics, access_token))
                         metrics_log.flush()
                     except subprocess.CalledProcessError as error:
                         monitor_errors.append(error.stderr)
@@ -94,14 +104,15 @@ def main():
                     '--summary-export', str(output / 'summary.json'),
                     '-e', f'MODE={args.mode}', '-e', f'SMOKE={int(args.smoke)}',
                     str(HERE / 'reservations.js')], cwd=ROOT, text=True,
-                    stdout=log, stderr=subprocess.STDOUT)
+                    stdout=log, stderr=subprocess.STDOUT,
+                    env={**os.environ, 'MEDHEAD_ACCESS_TOKEN': access_token})
         finally:
             stop.set()
             worker.join()
         # Capture the tail of the last interval and recovery before slow SQL checks.
         try:
             with (output / 'outbox-metrics.csv').open('a') as metrics_log:
-                csv.DictWriter(metrics_log, fieldnames=FIELDS).writerows(collect(API_URL, previous_metrics))
+                csv.DictWriter(metrics_log, fieldnames=FIELDS).writerows(collect(API_URL, previous_metrics, access_token))
         except (URLError, OSError, ValueError, KeyError) as error:
             monitor_errors.append(str(error))
         pending = int(sql('SELECT count(*) FROM event_outbox WHERE published_at IS NULL;',

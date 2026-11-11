@@ -22,6 +22,18 @@ court n'est pas une validation du pic à 800 req/s ni de la récupération.
 
 L'API dédiée est exposée sur `127.0.0.1:58080`. PostgreSQL et Redis ne publient
 aucun port. Les volumes appartiennent au projet Docker `medhead-performance`.
+Keycloak utilise `http://localhost:58180`, avec une base et un realm dédiés à
+cette pile. Le runner obtient un JWT via le compte de service `medhead-load`
+(secret local `medhead_perf_only`) et le transmet à k6 et à la collecte Actuator.
+Ce client est défini uniquement dans `tests/performance/keycloak`, sans compte
+humain ni flux mot de passe. Son jeton de 30 minutes couvre la campagne de
+13 minutes. Les mesures incluent maintenant la vérification des JWT par l’API ;
+la connexion et le renouvellement des sessions web ne sont pas mesurés.
+Chaque itération envoie une nouvelle clé `Idempotency-Key` (`crypto.randomUUID()`) :
+les mesures incluent donc le verrou et l’enregistrement de la demande, sans
+rejeu. Le contrôle SQL final vérifie une ligne `reservation_request` par
+réservation. Les campagnes antérieures à cette évolution ne sont pas directement
+comparables.
 Ne pas changer le nom de projet pour celui d'un environnement existant.
 Ne pas lancer d'autres clients sur cette API pendant une campagne.
 

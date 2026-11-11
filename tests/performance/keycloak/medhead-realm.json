@@ -1,0 +1,33 @@
+{
+  "realm": "medhead",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 1800,
+  "roles": { "realm": [{ "name": "REGULATEUR" }] },
+  "clients": [{
+    "clientId": "medhead-load",
+    "protocol": "openid-connect",
+    "publicClient": false,
+    "fullScopeAllowed": true,
+    "secret": "${KEYCLOAK_PERFORMANCE_SECRET}",
+    "standardFlowEnabled": false,
+    "directAccessGrantsEnabled": false,
+    "serviceAccountsEnabled": true,
+    "protocolMappers": [
+      {
+        "name": "api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+        "config": { "included.custom.audience": "medhead-api", "access.token.claim": "true", "id.token.claim": "false" }
+      },
+      {
+        "name": "roles", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-realm-role-mapper",
+        "config": { "claim.name": "roles", "multivalued": "true", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "false" }
+      }
+    ]
+  }],
+  "users": [{
+    "username": "service-account-medhead-load",
+    "enabled": true,
+    "serviceAccountClientId": "medhead-load",
+    "realmRoles": ["REGULATEUR"]
+  }]
+}

@@ -7,6 +7,8 @@ const mode = __ENV.MODE || 'success';
 const smoke = __ENV.SMOKE === '1';
 if (!['success', 'mixed'].includes(mode)) throw new Error('MODE must be success or mixed');
 const baseUrl = __ENV.BASE_URL || 'http://127.0.0.1:58080';
+const accessToken = __ENV.MEDHEAD_ACCESS_TOKEN;
+if (!accessToken) throw new Error('MEDHEAD_ACCESS_TOKEN is required');
 const created = new Counter('reservations_created');
 const refused = new Counter('reservations_refused');
 const successCallback = http.expectedStatuses(201);
@@ -69,7 +71,12 @@ function request(available) {
     latitude: 50.1 + ((n * 53) % 880) / 100,
     specialtyCode,
   }), {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      // Every iteration is a new reservation request; k6 never retries it.
+      'Idempotency-Key': crypto.randomUUID(),
+    },
     timeout: '2s',
     redirects: 0,
     responseCallback: available ? successCallback : unavailableCallback,

@@ -1,6 +1,23 @@
 name: medhead-performance
 
 services:
+  identity-database:
+    extends:
+      file: docker-compose.yaml
+      service: identity-database
+
+  keycloak:
+    extends:
+      file: docker-compose.yaml
+      service: keycloak
+    environment:
+      KC_HOSTNAME: http://localhost:58180
+      KEYCLOAK_PERFORMANCE_SECRET: medhead_perf_only
+    ports: !override
+      - "127.0.0.1:58180:8080"
+    volumes: !override
+      - ./tests/performance/keycloak:/opt/keycloak/data/import:ro
+
   database:
     extends:
       file: docker-compose.yaml
@@ -33,10 +50,12 @@ services:
       SPRING_DATASOURCE_PASSWORD: hospital_perf
       REDIS_PASSWORD: medhead_perf
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics
+      KEYCLOAK_ISSUER_URI: http://localhost:58180/realms/medhead
     ports: !override
       - "127.0.0.1:58080:8080"
 
 volumes:
+  keycloak-data:
   postgis-data:
   redis-data:
   redis-tls:

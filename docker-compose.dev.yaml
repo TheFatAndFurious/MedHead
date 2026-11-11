@@ -1,0 +1,26 @@
+# Front-end development mode, layered on top of docker-compose.yaml:
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up --build --watch
+# Source changes are copied into the container and picked up by Vite.
+# Dependency changes rebuild the image, so node_modules always matches package-lock.json.
+services:
+  frontend:
+    build:
+      target: dev
+    # A separate tag keeps the demo image (medhead-frontend:runtime) untouched.
+    image: medhead-frontend:dev
+    develop:
+      watch:
+        - path: ./frontend/src
+          target: /app/src
+          action: sync
+        - path: ./frontend/static
+          target: /app/static
+          action: sync
+        - path: ./frontend/package.json
+          action: rebuild
+        - path: ./frontend/package-lock.json
+          action: rebuild
+        - path: ./frontend/vite.config.ts
+          action: rebuild
+        - path: ./frontend/tsconfig.json
+          action: rebuild

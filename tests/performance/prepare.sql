@@ -8,7 +8,7 @@ DO $$ BEGIN
 END $$;
 
 BEGIN;
-TRUNCATE event_outbox, bed_reservation, hospital_specialty, hospital RESTART IDENTITY;
+TRUNCATE event_outbox, reservation_request, bed_reservation, hospital_specialty, hospital RESTART IDENTITY;
 
 INSERT INTO specialty (code, name)
 VALUES ('PERF_AVAILABLE', 'Performance available'), ('PERF_UNAVAILABLE', 'Performance unavailable')

@@ -13,6 +13,16 @@ def payload(count, total, statistic='TOTAL_TIME'):
 
 
 class MetricsTest(unittest.TestCase):
+    @patch('outbox_metrics.METRICS', {'outbox.event.duration': ['published']})
+    @patch('outbox_metrics.urlopen')
+    def test_metrics_requests_carry_the_access_token(self, urlopen):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        urlopen.return_value = response
+        with patch('outbox_metrics.json.load', return_value=payload(1, 0.01)):
+            collect('http://localhost', {}, 'test-only-token')
+        self.assertEqual(urlopen.call_args.args[0].get_header('Authorization'), 'Bearer test-only-token')
+
     def test_timer_and_batch_size_use_the_correct_total(self):
         self.assertEqual(parse_measurements(payload(10, 0.5)), (10, 0.5, 0.2))
         self.assertEqual(parse_measurements(payload(2, 100, 'TOTAL')), (2, 100, 0.2))

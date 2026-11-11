@@ -10,7 +10,14 @@
 	let specialtyCode = $state(untrack(() => form?.specialtyCode ?? ''));
 	let pending = $state(false);
 	let submissionError = $state('');
+	// Key of a submission whose answer was lost before reaching the page.
+	let retryKey = $state<string | null>(null);
 	const location = $derived(demoLocations.find((point) => point.id === locationId));
+	// Idempotency-Key sent with the next submission: the same one while the result is
+	// uncertain, so resending cannot reserve a second bed; a new one after a definite answer.
+	const idempotencyKey = $derived(retryKey ?? form?.idempotencyKey ?? data.reservationKey);
+	const uncertain = $derived(Boolean(form?.uncertain || submissionError));
+	const uncertainMessage = 'La confirmation n’a pas été reçue. Un lit a peut-être déjà été réservé. Renvoyez la même demande : si la réservation existe, elle sera affichée sans réserver de second lit.';
 </script>
 
 <svelte:head>
@@ -26,38 +33,50 @@
 		<p class="muted">Données fictives · Grand Londres</p>
 	</header>
 
+	{#if data.user}
 	<section class="panel" aria-labelledby="map-heading">
-		<h2 id="map-heading">Hôpitaux de démonstration</h2>
+		<h2 id="map-heading">Hôpitaux et lieux d’urgence</h2>
 		{#if data.mapError}
 			<p class="error" role="status">{data.mapError}</p>
 		{:else if data.hospitals.length === 0}
 			<p class="muted">Aucun hôpital n’est disponible sur la carte.</p>
 		{:else}
 			{#key data.hospitals}
-				<HospitalMap hospitals={data.hospitals} />
+				<HospitalMap
+					hospitals={data.hospitals}
+					bind:selectedLocationId={locationId}
+					selectionDisabled={!data.canReserve || pending || uncertain || Boolean(data.loadError)}
+				/>
 			{/key}
 		{/if}
 	</section>
 
 	<section class="panel" aria-labelledby="request-heading">
 		<h2 id="request-heading">Votre demande</h2>
+		{#if !data.canReserve}
+			<p class="notice">Votre compte dispose d’un accès en lecture seule. Le rôle Régulateur est nécessaire pour réserver un lit.</p>
+		{/if}
 		{#if data.loadError}
 			<p class="error" role="alert">{data.loadError}</p>
 			<a href="/" data-sveltekit-reload>Recharger les spécialités</a>
 		{/if}
 		<form
 			method="POST"
-			use:enhance={({ cancel }) => {
-				if (pending || form?.uncertain || submissionError) {
+			use:enhance={({ cancel, formData }) => {
+				if (pending) {
 					cancel();
 					return;
 				}
 				pending = true;
+				const sentKey = formData.get('idempotencyKey');
 				return async ({ result, update }) => {
 					try {
 						if (result.type === 'error') {
-							submissionError = 'La confirmation n’a pas été reçue. Un lit peut avoir été réservé. Vérifiez l’état de la demande avant un nouvel envoi.';
+							retryKey = typeof sentKey === 'string' ? sentKey : null;
+							submissionError = uncertainMessage;
 						} else {
+							retryKey = null;
+							submissionError = '';
 							await update({ reset: false, refreshAll: false });
 						}
 					} finally {
@@ -66,7 +85,13 @@
 				};
 			}}
 		>
-			<fieldset disabled={pending || Boolean(data.loadError)}>
+			<input type="hidden" name="idempotencyKey" value={idempotencyKey} />
+			{#if uncertain}
+				<!-- The choices are locked: resend exactly the same request with the same key. -->
+				<input type="hidden" name="locationId" value={locationId} />
+				<input type="hidden" name="specialtyCode" value={specialtyCode} />
+			{/if}
+			<fieldset disabled={!data.canReserve || pending || uncertain || Boolean(data.loadError)}>
 				<label for="location">Localisation de l’urgence</label>
 				<select id="location" name="locationId" bind:value={locationId} required aria-describedby="coordinates">
 					<option value="" disabled>Choisir un lieu de démonstration</option>
@@ -87,11 +112,17 @@
 					{/each}
 				</select>
 				<p class="muted">{data.specialties.length} spécialités dans le référentiel.</p>
-				<button type="submit" disabled={pending || !locationId || !specialtyCode || form?.uncertain || Boolean(submissionError)}>
-					{pending ? 'Réservation en cours…' : 'Réserver un lit'}
-				</button>
 			</fieldset>
-			<p class="notice">Chaque envoi réussi réserve un lit dans les données de démonstration.</p>
+			<button type="submit" disabled={!data.canReserve || pending || Boolean(data.loadError) || !locationId || !specialtyCode}>
+				{pending ? 'Réservation en cours…' : uncertain ? 'Renvoyer la même demande' : 'Réserver un lit'}
+			</button>
+			{#if uncertain && !pending}
+				<p class="notice">
+					<a href="/" data-sveltekit-reload>Abandonner cette demande et en saisir une nouvelle</a>.
+					Si un lit a déjà été réservé, il le reste.
+				</p>
+			{/if}
+			<p class="notice">Chaque nouvelle demande réussie réserve un lit dans les données de démonstration. Renvoyer une demande restée sans confirmation ne réserve jamais de second lit.</p>
 		</form>
 	</section>
 
@@ -102,8 +133,11 @@
 			<p class="panel error" role="alert">{submissionError || form?.error}</p>
 		{:else if form?.reservation}
 			<section class="panel result" aria-labelledby="result-heading">
-				<p class="eyebrow">Dernière réservation confirmée</p>
+				<p class="eyebrow">{form.replayed ? 'Réservation déjà enregistrée' : 'Dernière réservation confirmée'}</p>
 				<h2 id="result-heading">{form.reservation.hospitalName}</h2>
+				{#if form.replayed}
+					<p class="notice">La demande avait bien été enregistrée lors du premier envoi : aucun lit supplémentaire n’a été réservé.</p>
+				{/if}
 				<dl>
 					<dt>Départ</dt><dd>{demoLocations.find((point) => point.id === form.locationId)?.name}</dd>
 					<dt>Spécialité</dt><dd>{data.specialties.find((specialty) => specialty.code === form.reservation?.specialtyCode)?.name ?? form.reservation.specialtyCode}</dd>
@@ -116,6 +150,16 @@
 			</section>
 		{/if}
 	</div>
+	{:else}
+		<section class="panel" aria-labelledby="login-heading">
+			<h2 id="login-heading">Connectez-vous à MedHead</h2>
+			{#if data.logoutLocal}
+				<p class="notice" role="status">Votre session MedHead est fermée. La déconnexion globale n’a pas pu être confirmée.</p>
+			{/if}
+			<p>Utilisez votre compte professionnel pour consulter les hôpitaux et, selon vos droits, réserver un lit.</p>
+			<a href="/auth/login" data-sveltekit-reload>Se connecter avec Keycloak</a>
+		</section>
+	{/if}
 </main>
 
 <style>

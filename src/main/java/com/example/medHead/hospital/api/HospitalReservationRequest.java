@@ -1,11 +1,14 @@
 package com.example.medhead.hospital.api;
 
+import com.example.medhead.hospital.application.ReserveBedCommand;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
+
+import java.util.UUID;
 
 public record HospitalReservationRequest(
 		@NotNull(message = "Latitude is required")
@@ -26,4 +29,9 @@ public record HospitalReservationRequest(
 		)
 		String specialtyCode
 ) {
+
+	/** Converts this request, once validated, into the application command. */
+	public ReserveBedCommand toCommand(String requestedBy, UUID idempotencyKey) {
+		return new ReserveBedCommand(requestedBy, idempotencyKey, latitude, longitude, specialtyCode);
+	}
 }

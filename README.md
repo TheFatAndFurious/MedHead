@@ -8,7 +8,7 @@ Créer le fichier de configuration locale :
 cp .env.example .env
 ```
 
-Démarrer PostGIS, Redis, l'API et le front-end :
+Démarrer PostGIS, Redis, Keycloak, l'API et le front-end :
 
 ```bash
 docker compose up --build
@@ -20,12 +20,24 @@ schéma, charge les 80 spécialités du référentiel NHS, puis Docker ajoute 12
 hôpitaux fictifs répartis dans le Grand Londres.
 
 Le front-end SvelteKit est accessible sur <http://localhost:5173>.
-Il propose une liste de lieux de démonstration dans le Grand Londres et charge
+Cliquer sur « Se connecter » et utiliser un des comptes locaux de démonstration :
+
+| Compte | Mot de passe initial | Droits |
+| --- | --- | --- |
+| `lecteur` | `lecteur_demo` | Carte et référentiel en lecture seule |
+| `regulateur` | `regulateur_demo` | Consultation et réservation d’un lit |
+
+La console Keycloak est sur <http://localhost:8180> (administrateur initial
+`admin` / `medhead_admin_demo`). Ces valeurs de démonstration se règlent dans
+`.env` avant le premier démarrage. Utiliser `localhost` pour le navigateur ;
+les URL de retour sont enregistrées avec cette origine. Le détail des sessions,
+des rôles et des vérifications est dans [le guide d’authentification](docs/authentification.md).
+
+Le front-end propose une liste de lieux de démonstration dans le Grand Londres et charge
 les spécialités depuis l’API. Le bouton « Réserver un lit » envoie la demande
 et affiche l’hôpital retenu, la distance et la référence de réservation.
 Chaque réussite consomme un lit du jeu de démonstration.
-Les modifications de `frontend/src` et `frontend/static` sont prises en compte
-sans reconstruire l’image. `FRONTEND_PORT` permet de changer le port local.
+`FRONTEND_PORT` permet de changer le port local.
 
 Pour démarrer uniquement le front-end :
 
@@ -36,17 +48,32 @@ docker compose up --build frontend
 L’API doit déjà être démarrée pour charger les spécialités et réserver un lit.
 Sinon, la page affiche un message et permet de recharger les spécialités.
 
-Le conteneur utilise le serveur de développement. La configuration et les
-commandes de vérification sont décrites dans le
+Le conteneur exécute l’application compilée avec l’utilisateur non privilégié
+`node`, sans montage du code source : relancer `docker compose up --build`
+après une modification. Pour développer avec rechargement automatique, ajouter
+le fichier `docker-compose.dev.yaml` :
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up --build --watch
+```
+
+Ce mode lance le serveur de développement Vite. Il copie les modifications de
+`frontend/src` et `frontend/static` dans le conteneur et reconstruit l’image
+quand les dépendances changent. Le mode développement, la configuration et les
+commandes de vérification sont décrits dans le
 [guide du front-end](frontend/README.md).
 
 ## Hôpitaux et spécialités pour le front-end
 
 Deux routes de lecture fournissent les données de la carte et du formulaire :
+elles nécessitent désormais un JWT d’accès valide avec le rôle `LECTEUR` ou
+`REGULATEUR`. Les exemples d’appels directs supposent un jeton fourni à un client
+API autorisé dans la variable `MEDHEAD_ACCESS_TOKEN`. Le parcours web gère ces
+jetons côté serveur ; ils ne sont pas exposés dans le navigateur.
 
 ```bash
-curl http://localhost:8080/api/v1/hospitals
-curl http://localhost:8080/api/v1/specialties
+curl -H "Authorization: Bearer $MEDHEAD_ACCESS_TOKEN" http://localhost:8080/api/v1/hospitals
+curl -H "Authorization: Bearer $MEDHEAD_ACCESS_TOKEN" http://localhost:8080/api/v1/specialties
 ```
 
 Les deux routes renvoient `200 OK` avec un tableau JSON trié par nom, puis par
@@ -69,10 +96,12 @@ apparaissent aussi si ce jeu a été chargé dans la même base.
 
 L'API réserve un lit dans l'hôpital disponible le plus proche possédant la
 spécialité demandée. La sélection utilise une requête PostGIS paramétrée.
-Pour effectuer une réservation :
+Pour effectuer une réservation, le jeton doit posséder le rôle `REGULATEUR` :
 
 ```bash
 curl --request POST http://localhost:8080/api/v1/hospitals/reservations \
+  --header "Authorization: Bearer $MEDHEAD_ACCESS_TOKEN" \
+  --header "Idempotency-Key: $(uuidgen)" \
   --header 'Content-Type: application/json' \
   --data '{
     "latitude": 51.5074,
@@ -86,19 +115,52 @@ l'hôpital, `reservationId`, `reservedAt` et le nombre de lits disponibles
 **après** réservation, ainsi que la distance en mètres. La capacité totale
 reste inchangée. Des critères invalides ou une spécialité inconnue renvoient
 `400 Bad Request` ; l'absence de lit disponible renvoie `404 Not Found`.
-Chaque appel réussi crée une nouvelle réservation.
 
-Une seule transaction PostgreSQL effectue les trois écritures :
+### Idempotence des demandes
+
+L'en-tête `Idempotency-Key` est obligatoire : le client génère un UUID par
+demande de réservation et renvoie **le même UUID** s'il répète cette demande,
+par exemple après un délai dépassé. Une clé absente ou qui n'est pas un UUID
+renvoie `400 Bad Request` sans rien réserver.
+
+- Une nouvelle clé crée une nouvelle réservation.
+- Une clé déjà acceptée, avec les mêmes coordonnées et la même spécialité,
+  renvoie la réponse d'origine (`201 Created`, même `reservationId`) avec
+  l'en-tête `Idempotent-Replayed: true`. Aucun lit n'est consommé et aucun
+  événement n'est ajouté.
+- Une clé déjà acceptée pour une autre demande renvoie
+  `422 Unprocessable Content` (`urn:problem:idempotency-key-reused`).
+- Une demande refusée (spécialité inconnue, aucun lit) n'enregistre rien : elle
+  peut être renvoyée avec la même clé.
+
+La clé est rattachée à l'utilisateur authentifié (sujet `sub` du JWT) : la même
+clé envoyée par un autre compte correspond à une autre demande et ne renvoie
+jamais la réservation d'un tiers. Deux envois simultanés de la même clé sont
+sérialisés par un verrou PostgreSQL de transaction
+(`pg_advisory_xact_lock`) : le second attend la fin du premier puis renvoie sa
+réservation. La clé primaire `(requested_by, idempotency_key)` de la table
+`reservation_request` garantit en dernier recours qu'une clé ne crée qu'une
+réservation.
+
+Chaque ligne de `reservation_request` conserve le demandeur, la clé, une
+empreinte SHA-256 de la demande (les coordonnées ne sont pas stockées en clair),
+la réservation et la réponse renvoyée. Ces lignes ne sont pas purgées dans le
+POC ; elles servent aussi de trace de l'auteur de chaque réservation.
+
+### Transaction
+
+Une seule transaction PostgreSQL effectue les quatre écritures :
 
 1. Décrémenter `hospital.available_beds` de 1.
 2. Enregistrer la réservation dans `bed_reservation` avec un UUID.
 3. Enregistrer un événement `BedReserved` dans `event_outbox`.
+4. Enregistrer la demande dans `reservation_request`.
 
 La décrémentation est conditionnelle (`available_beds > 0`) et verrouille la
 ligne de l'hôpital jusqu'à la fin de la transaction. Si une demande concurrente
 a pris le dernier lit entre la recherche et la mise à jour, le service relance
 la recherche pour réserver dans le prochain hôpital disponible. Une erreur,
-y compris à l'insertion de l'outbox, annule toutes les écritures.
+y compris à l'insertion de l'outbox ou de la demande, annule toutes les écritures.
 
 L'outbox contient un UUID d'événement, le type, l'UUID de réservation
 (`aggregate_id`), la date et un payload JSON avec `eventId`, `reservationId`,
@@ -266,9 +328,20 @@ Les tests sans base de données se lancent avec :
 ./mvnw test
 ```
 
+Ils incluent une règle d'architecture vérifiée par ArchUnit
+(`ArchitectureTest`). Dans le module `hospital`, les dépendances vont dans un
+seul sens : `api` → `application` → `persistence` → `domain`. La couche
+`application` reçoit une commande (`ReserveBedCommand`) et renvoie ses propres
+résultats (`ReservedBed`, `HospitalSummary`, `SpecialtySummary`). Les DTO HTTP
+et leur conversion restent dans `api`. Une dépendance dans l'autre sens fait
+échouer le build.
+
 Les tests PostgreSQL utilisent une base PostGIS dédiée, éphémère, sur le port
 `55432`. Ils vérifient la transaction, le rollback en cas d'échec de l'outbox,
 la réservation concurrente du dernier lit et la sélection de l'hôpital suivant.
+Ils vérifient aussi l'idempotence : rejeu d'une même clé sans second lit, refus
+d'une clé réutilisée pour une autre demande, clé propre à chaque utilisateur,
+nouvel essai possible après un refus et envois simultanés d'une même clé.
 Ils couvrent aussi les catalogues d’hôpitaux et de spécialités : coordonnées,
 tri, listes vides et absence de réservation lors de la lecture.
 
@@ -303,12 +376,16 @@ permet d'utiliser un autre emplacement de certificat public.
 
 ## Intégration continue
 
-Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute un
-seul job, `backend-ci`, pour les pull requests ciblant `master` et les push
-sur `master`. Il peut aussi être lancé manuellement depuis l'onglet
+Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute deux
+jobs, `frontend-ci` et `backend-ci`, pour les pull requests ciblant `master` et
+les push sur `master`. Il peut aussi être lancé manuellement depuis l'onglet
 **Actions**, une fois le workflow présent sur la branche par défaut.
 
-Le job utilise Ubuntu 24.04, Java 21 Temurin et le Maven Wrapper du dépôt,
+Le job `frontend-ci` utilise Node 24 : il installe les dépendances avec `npm ci`,
+lance les tests, la vérification Svelte et la compilation, puis construit les
+deux images Docker du front-end (cibles `runtime` et `dev`).
+
+Le job `backend-ci` utilise Ubuntu 24.04, Java 21 Temurin et le Maven Wrapper du dépôt,
 avec un cache des dépendances Maven. Il est limité à 20 minutes et dispose
 uniquement de la permission `contents: read`. Les services utilisent les
 identifiants de test du Compose ; aucun secret GitHub ou fichier `.env`

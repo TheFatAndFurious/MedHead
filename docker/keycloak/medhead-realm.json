@@ -1,0 +1,87 @@
+{
+  "realm": "medhead",
+  "displayName": "MedHead",
+  "enabled": true,
+  "internationalizationEnabled": true,
+  "supportedLocales": ["fr", "en"],
+  "defaultLocale": "fr",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "roles": { "realm": [{ "name": "LECTEUR" }, { "name": "REGULATEUR" }] },
+  "clients": [
+    {
+      "clientId": "medhead-web",
+      "name": "MedHead — session serveur",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "fullScopeAllowed": true,
+      "defaultClientScopes": ["profile", "roles"],
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KEYCLOAK_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["${MEDHEAD_PUBLIC_ORIGIN}/auth/callback"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${MEDHEAD_PUBLIC_ORIGIN}/"
+      },
+      "protocolMappers": [
+        {
+          "name": "medhead-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "medhead-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "medhead-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "lecteur",
+      "enabled": true,
+      "firstName": "Lecteur",
+      "lastName": "Démo",
+      "email": "lecteur@medhead.example.test",
+      "emailVerified": true,
+      "realmRoles": ["LECTEUR"],
+      "credentials": [{ "type": "password", "value": "${KEYCLOAK_LECTEUR_PASSWORD}", "temporary": false }]
+    },
+    {
+      "username": "regulateur",
+      "enabled": true,
+      "firstName": "Régulateur",
+      "lastName": "Démo",
+      "email": "regulateur@medhead.example.test",
+      "emailVerified": true,
+      "realmRoles": ["REGULATEUR"],
+      "credentials": [{ "type": "password", "value": "${KEYCLOAK_REGULATEUR_PASSWORD}", "temporary": false }]
+    }
+  ]
+}

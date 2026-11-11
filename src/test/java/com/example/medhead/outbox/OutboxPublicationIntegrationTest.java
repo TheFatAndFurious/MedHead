@@ -1,7 +1,7 @@
 package com.example.medhead.outbox;
 
-import com.example.medhead.hospital.api.HospitalReservationResponse;
-import com.example.medhead.hospital.api.HospitalReservationRequest;
+import com.example.medhead.hospital.application.ReserveBedCommand;
+import com.example.medhead.hospital.application.ReservedBed;
 import com.example.medhead.hospital.application.ReserveNearestAvailableBedService;
 import io.lettuce.core.SslVerifyMode;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -110,7 +110,7 @@ class OutboxPublicationIntegrationTest {
 		LettuceConnectionFactory factory = (LettuceConnectionFactory) redis.getConnectionFactory();
 		assertThat(factory.getClientConfiguration().isUseSsl()).isTrue();
 		assertThat(factory.getClientConfiguration().getVerifyMode()).isEqualTo(SslVerifyMode.FULL);
-		HospitalReservationResponse reservation = reserveBed();
+		ReservedBed reservation = reserveBed();
 		UUID eventId = jdbc.queryForObject(
 				"select id from event_outbox where aggregate_id = ?", UUID.class, reservation.reservationId()
 		);
@@ -277,7 +277,7 @@ class OutboxPublicationIntegrationTest {
 		unavailable.afterPropertiesSet();
 		try {
 			redis.setConnectionFactory(unavailable);
-			HospitalReservationResponse reservation = reserveBed();
+			ReservedBed reservation = reserveBed();
 			assertThat(reservation.availableBeds()).isZero();
 			new OutboxPublisher(publicationService, 10, metrics).publishPending();
 			assertThat(pendingCount()).isEqualTo(1);
@@ -426,7 +426,7 @@ class OutboxPublicationIntegrationTest {
 				Integer.class);
 	}
 
-	private HospitalReservationResponse reserveBed() {
+	private ReservedBed reserveBed() {
 		jdbc.update("insert into specialty (code, name) values (?, ?)", SPECIALTY, "Outbox test");
 		long hospitalId = jdbc.queryForObject("""
 				insert into hospital (code, name, location, total_beds, available_beds)
@@ -434,7 +434,9 @@ class OutboxPublicationIntegrationTest {
 				returning id
 				""", Long.class);
 		jdbc.update("insert into hospital_specialty (hospital_id, specialty_id) select ?, id from specialty where code = ?", hospitalId, SPECIALTY);
-		return reservationService.reserveNearest(new HospitalReservationRequest(51.5074, -0.1278, SPECIALTY));
+		return reservationService.reserveNearest(
+				new ReserveBedCommand("outbox-test", UUID.randomUUID(), 51.5074, -0.1278, SPECIALTY)
+		).reservation();
 	}
 
 	private int pendingCount() {

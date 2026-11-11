@@ -10,7 +10,12 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
-			adapter: adapter()
+			adapter: adapter(),
+			paths: {
+				// Public origin for request URLs and the built-in CSRF check. Without it, the
+				// Node adapter derives the origin from headers and assumes https.
+				origin: process.env.MEDHEAD_PUBLIC_ORIGIN || undefined
+			}
 		})
 	]
 });

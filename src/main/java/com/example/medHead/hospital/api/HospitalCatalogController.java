@@ -20,11 +20,11 @@ public class HospitalCatalogController {
 
 	@GetMapping("/hospitals")
 	public List<HospitalResponse> listHospitals() {
-		return catalogService.listHospitals();
+		return catalogService.listHospitals().stream().map(HospitalResponse::from).toList();
 	}
 
 	@GetMapping("/specialties")
 	public List<SpecialtyResponse> listSpecialties() {
-		return catalogService.listSpecialties();
+		return catalogService.listSpecialties().stream().map(SpecialtyResponse::from).toList();
 	}
 }
