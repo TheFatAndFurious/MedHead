@@ -1,0 +1,26 @@
+target/
+.idea/
+*.iml
+*.log
+.env
+.local/
+.DS_Store
+
+### IntelliJ IDEA ###
+out/
+
+### VS Code ###
+.vscode/
+
+### Eclipse ###
+.classpath
+.project
+.settings/
+
+### Python ###
+__pycache__/
+*.pyc
+
+### Local tooling ###
+.archify/
+.claude/settings.local.json
