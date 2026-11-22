@@ -215,6 +215,78 @@ La réservation et la disponibilité de l'API ne dépendent pas du succès de ce
 envoi. `/actuator/health/readiness` vérifie l'API et PostgreSQL et sert au
 healthcheck Docker. `/actuator/health` inclut aussi Redis et signale ses pannes.
 
+## Configuration PostgreSQL
+
+### Transport TLS (`verify-full`)
+
+Toutes les connexions réseau à la base `database` sont chiffrées en TLS 1.2
+ou TLS 1.3. `pg_hba.conf` (`docker/postgis/pg_hba.conf`) n'accepte que
+`hostssl` avec une authentification SCRAM-SHA-256 et rejette toute connexion
+TCP sans TLS. Seul le socket Unix interne au conteneur reste sans TLS : il sert
+à l'initialisation, à `pg_isready` et à `docker compose exec database psql`.
+
+Les clients utilisent `sslmode=verify-full` : ils vérifient que le certificat
+du serveur est signé par l'autorité locale **et** que son nom correspond à
+l'hôte contacté. Un chiffrement sans vérification (`require`) ne protège pas
+contre une interception sur le réseau.
+
+Le service ponctuel `database-tls` suit le même modèle que Redis : il génère
+une autorité locale et un certificat serveur valide un an pour les noms
+`database`, `localhost` et l'adresse `127.0.0.1`, et les conserve dans le
+volume `postgis-tls`. La clé privée du serveur appartient à l'utilisateur
+`postgres` (mode `600`) ; la clé privée de l'autorité est supprimée après
+signature. Seul le certificat public de l'autorité est copié dans le volume
+`postgis-ca`, monté en lecture seule dans l'API et dans les services `psql`
+(`seed`, `reset-seed`, `seed-load`, `clear-load`). Aucun certificat n'est
+ajouté au dépôt ou à l'image.
+
+| Client | Configuration |
+| --- | --- |
+| API (Docker) | `SPRING_DATASOURCE_URL=…?sslmode=verify-full&sslrootcert=/etc/postgres-ca/ca.crt` |
+| Services `psql` | `PGSSLMODE=verify-full` et `PGSSLROOTCERT=/etc/postgres-ca/ca.crt` |
+| API hors Docker | URL par défaut de `application.properties`, avec `.local/postgres/ca.crt` |
+
+Les paramètres TLS figurent dans l'URL JDBC : ils s'appliquent ainsi au pool
+de connexions et à la connexion dédiée au `LISTEN` de l'outbox. Toute URL
+fournie via `SPRING_DATASOURCE_URL` doit donc les conserver.
+
+Pour lancer l'API hors Docker, copier d'abord le certificat public :
+
+```bash
+mkdir -p .local/postgres
+docker compose cp database:/tls/ca.crt .local/postgres/ca.crt
+```
+
+Pour vérifier que les connexions de l'API utilisent TLS :
+
+```bash
+docker compose exec database sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select a.application_name, s.ssl, s.version from pg_stat_ssl s join pg_stat_activity a using (pid) where a.client_addr is not null"'
+```
+
+Chaque ligne doit afficher `ssl = t`. Une connexion sans TLS est refusée avec
+le message `pg_hba.conf rejects connection … no encryption` :
+
+```bash
+docker compose exec database psql "host=database user=hospital_app dbname=hospital sslmode=disable"
+```
+
+pgAdmin négocie TLS automatiquement (mode `prefer` par défaut), mais sans
+vérifier le certificat. Cet outil d'administration local n'est pas exposé
+hors de `127.0.0.1`.
+
+Pour renouveler les certificats, supprimer uniquement leur volume ; les
+données de `postgis-data` sont conservées :
+
+```bash
+docker compose down
+docker volume rm medhead_postgis-tls
+docker compose up --build
+```
+
+Une nouvelle autorité est générée et copiée dans `postgis-ca` avant le
+redémarrage de l'API. Recopier `.local/postgres/ca.crt` si l'API tourne hors
+Docker.
+
 ## Configuration Redis Streams
 
 Redis `8.2.10` utilise le réseau Docker `backend`, sans port publié sur la
@@ -345,18 +417,27 @@ nouvel essai possible après un refus et envois simultanés d'une même clé.
 Ils couvrent aussi les catalogues d’hôpitaux et de spécialités : coordonnées,
 tri, listes vides et absence de réservation lors de la lecture.
 
+La base de test impose TLS comme la base de démonstration : copier son
+certificat public avant les tests. `DatabaseTlsIntegrationTest` vérifie que le
+pool de l'application utilise TLS, que le serveur refuse une connexion sans TLS
+et que `verify-full` refuse un certificat signé par une autre autorité.
+
 ```bash
 docker compose -f docker-compose.test.yaml up --build -d --wait database
+mkdir -p .local/postgres-tests
+docker compose -f docker-compose.test.yaml cp database:/tls/ca.crt .local/postgres-tests/ca.crt
 ./mvnw -Dmedhead.integration-tests=true test
-docker compose -f docker-compose.test.yaml down
+docker compose -f docker-compose.test.yaml down -v
 ```
 
 Pour lancer également les tests Redis TLS, le Compose de test expose Redis
-uniquement sur `127.0.0.1:56379`. Copier son certificat public avant les tests :
+uniquement sur `127.0.0.1:56379`. Copier les deux certificats publics avant
+les tests :
 
 ```bash
 docker compose -f docker-compose.test.yaml up --build -d --wait
-mkdir -p .local/redis-tests
+mkdir -p .local/postgres-tests .local/redis-tests
+docker compose -f docker-compose.test.yaml cp database:/tls/ca.crt .local/postgres-tests/ca.crt
 docker compose -f docker-compose.test.yaml cp redis:/tls/ca.crt .local/redis-tests/ca.crt
 ./mvnw -Dmedhead.integration-tests=true -Dmedhead.redis-integration-tests=true test
 docker compose -f docker-compose.test.yaml down -v
@@ -370,7 +451,8 @@ Redis produit un doublon avec le même `eventId` lors de la reprise.
 
 Pour utiliser d'autres ports, définir `TEST_POSTGRES_PORT` et `TEST_REDIS_PORT`
 lors du démarrage Docker, puis passer les valeurs correspondantes via
-`-Dmedhead.test.jdbc-url=jdbc:postgresql://localhost:PORT/hospital_test` et
+`'-Dmedhead.test.jdbc-url=jdbc:postgresql://localhost:PORT/hospital_test?sslmode=verify-full&sslrootcert=.local/postgres-tests/ca.crt'`
+(les guillemets protègent le `&` du shell) et
 `-Dmedhead.test.redis-port=PORT`. `-Dmedhead.test.redis-ca=file:/chemin/ca.crt`
 permet d'utiliser un autre emplacement de certificat public.
 
@@ -394,14 +476,16 @@ personnel n'est nécessaire.
 Les étapes s'exécutent dans cet ordre :
 
 1. Récupérer le code et préparer Java et le cache Maven.
-2. Construire et démarrer PostGIS et Redis TLS avec
+2. Construire et démarrer PostGIS TLS et Redis TLS avec
    `docker-compose.test.yaml`, puis attendre leur disponibilité. L'attente
    après démarrage est limitée à 120 secondes.
-3. Copier le certificat public de Redis dans `.local/redis-tests/ca.crt`.
+3. Copier les certificats publics de PostgreSQL et de Redis dans
+   `.local/postgres-tests/ca.crt` et `.local/redis-tests/ca.crt`.
 4. Exécuter `clean verify` avec les deux propriétés d'intégration activées :
    les tests unitaires et d'intégration sont exécutés, puis le JAR est créé.
-5. Vérifier les rapports JUnit de `HospitalCatalogIntegrationTest`,
-   `BedReservationIntegrationTest` et `OutboxPublicationIntegrationTest`.
+5. Vérifier les rapports JUnit de `DatabaseTlsIntegrationTest`,
+   `HospitalCatalogIntegrationTest`, `BedReservationIntegrationTest` et
+   `OutboxPublicationIntegrationTest`.
    Le job échoue si un rapport manque,
    si une suite n'a exécuté aucun test ou si elle contient des tests ignorés,
    des échecs ou des erreurs.
@@ -438,10 +522,12 @@ de toucher aux services de démonstration ou à un autre environnement de test :
 export COMPOSE_PROJECT_NAME=medhead-ci-local
 docker compose -f docker-compose.test.yaml up --build -d --wait --wait-timeout 120
 mkdir -p .local/ci-local
+docker compose -f docker-compose.test.yaml cp database:/tls/ca.crt .local/ci-local/postgres-ca.crt
 docker compose -f docker-compose.test.yaml cp redis:/tls/ca.crt .local/ci-local/ca.crt
 ./mvnw --batch-mode --no-transfer-progress \
   -Dmedhead.integration-tests=true \
   -Dmedhead.redis-integration-tests=true \
+  '-Dmedhead.test.jdbc-url=jdbc:postgresql://localhost:55432/hospital_test?sslmode=verify-full&sslrootcert=.local/ci-local/postgres-ca.crt' \
   -Dmedhead.test.redis-ca=file:./.local/ci-local/ca.crt \
   clean verify
 ```
