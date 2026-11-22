@@ -916,9 +916,10 @@ impose :
 
 - **pull request obligatoire** : aucun push direct sur `master`, y compris
   pour les administrateurs ;
-- **contrôles requis** : `frontend-ci` et `backend-ci`, puis `e2e` dès que ce
-  job existe ([#23](https://github.com/TheFatAndFurious/MedHead/issues/23)) ;
-  une PR dont un contrôle est rouge ou en cours ne peut pas être fusionnée ;
+- **contrôles requis** : `frontend-ci`, `backend-ci` et `e2e` ; une PR dont un
+  contrôle est rouge ou en cours ne peut pas être fusionnée ;
+- **historique protégé** : ni suppression de `master`, ni réécriture
+  (`push --force`) ;
 - la fusion est faite par le relecteur, après relecture de la PR.
 
 ### Stratégie de fusion : merge commit
@@ -957,7 +958,7 @@ git push origin v0.1.0
 
 Le push d'un tag `v*` déclenche la publication des artefacts versionnés
 (images Docker et release GitHub), décrite dans la section
-[Intégration continue](#intégration-continue) ; ces jobs sont ajoutés par
+[Intégration continue](#intégration-continue) ; ces jobs ont été ajoutés par
 [#21](https://github.com/TheFatAndFurious/MedHead/issues/21). Un tag publié
 n'est jamais déplacé : une erreur se corrige par une nouvelle version.
 
