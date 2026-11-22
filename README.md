@@ -459,9 +459,12 @@ permet d'utiliser un autre emplacement de certificat public.
 ## Intégration continue
 
 Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute deux
-jobs, `frontend-ci` et `backend-ci`, pour les pull requests ciblant `master` et
-les push sur `master`. Il peut aussi être lancé manuellement depuis l'onglet
-**Actions**, une fois le workflow présent sur la branche par défaut.
+jobs, `frontend-ci` et `backend-ci`, pour les pull requests ciblant `master`,
+les push sur `master` et les tags `v*`. Il peut aussi être lancé manuellement
+depuis l'onglet **Actions**, une fois le workflow présent sur la branche par
+défaut. Deux jobs de livraison s'y ajoutent, jamais sur une pull request :
+`publish` publie les images sur GHCR et `release` crée une GitHub Release (voir
+[Versionnage et livraison](#versionnage-et-livraison)).
 
 Le job `frontend-ci` utilise Node 24 : il installe les dépendances avec `npm ci`,
 lance les tests, la vérification Svelte et la compilation, puis construit les
@@ -503,14 +506,84 @@ GitHub Actions pendant sept jours :
 
 | Artefact | Contenu | Disponibilité |
 | --- | --- | --- |
-| `backend-test-reports` | Rapports XML et texte de `target/surefire-reports/` | Même après un échec, si Maven a produit des rapports |
-| `backend-jar` | JAR de l'application | Après un `clean verify` réussi, même si la construction Docker échoue ensuite |
+| `backend-test-reports-<sha>` | Rapports XML et texte de `target/surefire-reports/` | Même après un échec, si Maven a produit des rapports |
+| `backend-jar-<sha>` | JAR de l'application, avec sa version et son commit | Après un `clean verify` réussi, même si la construction Docker échoue ensuite |
 | `backend-docker-diagnostics` | État des conteneurs et logs Compose | En cas d'échec du job avant le nettoyage |
+
+`<sha>` est le SHA complet du commit testé (`github.sha`) : pour une pull
+request, c'est le commit de fusion temporaire calculé par GitHub. Le nom de la
+branche n'est pas utilisé, car un nom d'artefact ne peut pas contenir de `/`.
 
 Le Dockerfile recompile actuellement l'application avec `-DskipTests`.
 Cette seconde compilation suit la validation complète réalisée par Maven
-dans le job. L'image est construite localement sur le runner ; sa publication,
-le déploiement et les tests de charge feront l'objet de workflows distincts.
+dans le job. Les images `medhead:ci` et `medhead-frontend:ci` restent locales
+au runner ; le job `publish` construit et publie les images livrées. Le
+déploiement et les tests de charge feront l'objet de workflows distincts.
+
+### Versionnage et livraison
+
+| Contexte | Version du JAR | Tags des images GHCR |
+| --- | --- | --- |
+| Travail en cours (branche, pull request) | `0.1.0-SNAPSHOT` (`pom.xml`) | Aucun : rien n'est publié |
+| Push sur `master` | `0.1.0-SNAPSHOT` (`pom.xml`) | `sha-<7 caractères>` et `master` |
+| Tag `vX.Y.Z` | `X.Y.Z` pour le JAR de la release et l'image (l'artefact `backend-jar-<sha>` reste en SNAPSHOT) | `X.Y.Z` et `latest` |
+
+Après la réussite de `frontend-ci` et `backend-ci`, le job `publish` construit
+et publie deux images :
+
+| Image | Dockerfile |
+| --- | --- |
+| `ghcr.io/thefatandfurious/medhead-api` | `Dockerfile` |
+| `ghcr.io/thefatandfurious/medhead-frontend` | `frontend/Dockerfile`, cible `runtime` |
+
+Seul ce job dispose de la permission `packages: write` ; il se connecte à GHCR
+avec le `GITHUB_TOKEN` de l'exécution, sans autre secret. Sur un tag, le job
+`release` construit ensuite le JAR en version `X.Y.Z` et crée la GitHub Release
+correspondante, avec le JAR et des notes générées depuis les pull requests.
+Seul ce job dispose de la permission `contents: write`.
+
+#### Retrouver le commit d'un artefact
+
+Chaque JAR contient `git.properties` (commit, branche) et
+`META-INF/build-info.properties` (version). L'API les expose sans
+authentification, en lecture seule, sur `/actuator/info` :
+
+```bash
+curl -s http://localhost:8080/actuator/info
+```
+
+```json
+{"git":{"branch":"master","commit":{"id":"b31cfc3","time":"2026-11-22T10:38:11Z"}},
+ "build":{"artifact":"medhead","name":"MedHead","time":"…","version":"0.1.0-SNAPSHOT","group":"com.example"}}
+```
+
+Les images portent les labels OCI `org.opencontainers.image.revision` (SHA
+complet), `.version`, `.created` et `.source` :
+
+```bash
+docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+  ghcr.io/thefatandfurious/medhead-api:master
+```
+
+Le contexte Docker exclut `.git` : le JAR d'une image ne contient donc que la
+version, et le commit d'une image se lit avec `docker inspect`. Pour une
+construction locale, ces informations se passent en arguments (`VCS_REF`,
+`VERSION`, `BUILD_DATE`) ; à défaut, les labels valent `unknown`. Dans un
+worktree Git, le plugin lit le commit du dépôt principal : construire depuis un
+clone classique pour obtenir le commit exact.
+
+#### Publier une release
+
+Une fois `master` à jour et sa CI verte, poser un tag de version et le pousser :
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Le workflow teste le commit taggé, publie les images `0.1.0` et `latest`, puis
+crée la release `v0.1.0` avec `medhead-0.1.0.jar`. La version du `pom.xml`
+reste en `-SNAPSHOT` ; la passer à la version suivante (par exemple
+`0.2.0-SNAPSHOT`) dans une pull request ultérieure.
 
 ### Reproduire les étapes principales en local
 

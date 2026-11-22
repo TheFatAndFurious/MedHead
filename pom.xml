@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>com.example</groupId>
 	<artifactId>medhead</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>0.1.0-SNAPSHOT</version>
 	<name>MedHead</name>
 	<description>Proof of concept for real-time emergency hospital allocation</description>
 	<url/>
@@ -114,6 +114,44 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+				<executions>
+					<!-- Writes META-INF/build-info.properties, exposed by /actuator/info. -->
+					<execution>
+						<goals>
+							<goal>build-info</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<!-- ActuatorInfoTest compares /actuator/info with the version being built. -->
+						<medhead.expected-version>${project.version}</medhead.expected-version>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+			<!-- Writes git.properties (commit, branch), exposed by /actuator/info. The version and
+				 the base configuration come from spring-boot-starter-parent. -->
+			<plugin>
+				<groupId>io.github.git-commit-id</groupId>
+				<artifactId>git-commit-id-maven-plugin</artifactId>
+				<configuration>
+					<!-- The Docker build context excludes .git: build without git.properties there. -->
+					<failOnNoGitDirectory>false</failOnNoGitDirectory>
+					<verbose>false</verbose>
+					<!-- Keep build traceability only: no user name, e-mail or host in the JAR. -->
+					<includeOnlyProperties>
+						<includeOnlyProperty>^git\.branch$</includeOnlyProperty>
+						<includeOnlyProperty>^git\.build\.(time|version)$</includeOnlyProperty>
+						<includeOnlyProperty>^git\.commit\.id(\.abbrev)?$</includeOnlyProperty>
+						<includeOnlyProperty>^git\.commit\.time$</includeOnlyProperty>
+						<includeOnlyProperty>^git\.dirty$</includeOnlyProperty>
+						<includeOnlyProperty>^git\.tags$</includeOnlyProperty>
+					</includeOnlyProperties>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>

@@ -5,6 +5,7 @@ on:
     branches: [master]
   push:
     branches: [master]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -120,7 +121,7 @@ jobs:
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: backend-test-reports
+          name: backend-test-reports-${{ github.sha }}
           path: target/surefire-reports/
           if-no-files-found: warn
           retention-days: 7
@@ -129,7 +130,7 @@ jobs:
         if: ${{ always() && steps.maven.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: backend-jar
+          name: backend-jar-${{ github.sha }}
           path: target/*.jar
           if-no-files-found: error
           retention-days: 7
@@ -156,3 +157,110 @@ jobs:
       - name: Stop the test environment
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         run: docker compose -f docker-compose.test.yaml down --volumes --remove-orphans
+
+  # Continuous delivery: pushes both images to GHCR once the CI jobs pass,
+  # on a push to master or on a vX.Y.Z tag, never for a pull request.
+  publish:
+    name: publish (${{ matrix.image }})
+    if: >-
+      github.event_name == 'push'
+      && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [frontend-ci, backend-ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: medhead-api
+            context: .
+          - image: medhead-frontend
+            context: frontend
+            target: runtime
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compute the version and the build date
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("pom.xml").getroot().findtext("{http://maven.apache.org/POM/4.0.0}version"))')"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build-date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # master: sha-<7 characters> and master; vX.Y.Z tag: X.Y.Z and latest.
+      - name: Compute the image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/thefatandfurious/${{ matrix.image }}
+          flavor: latest=auto
+          tags: |
+            type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push the image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.version.outputs.version }}
+            BUILD_DATE=${{ steps.version.outputs.build-date }}
+
+  # Release: on a vX.Y.Z tag, once the images are published, builds the JAR with
+  # version X.Y.Z and attaches it to a GitHub Release with generated notes.
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            pom.xml
+            .mvn/wrapper/maven-wrapper.properties
+
+      # The tests already passed in backend-ci for this commit.
+      - name: Build the JAR with the tag version
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress -DgenerateBackupPoms=false \
+            versions:set -DnewVersion="${GITHUB_REF_NAME#v}"
+          ./mvnw --batch-mode --no-transfer-progress -DskipTests clean package
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" target/*.jar --verify-tag --generate-notes
