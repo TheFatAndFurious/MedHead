@@ -95,6 +95,7 @@ jobs:
               "com.example.medhead.hospital.api.HospitalCatalogIntegrationTest",
               "com.example.medhead.hospital.application.BedReservationIntegrationTest",
               "com.example.medhead.outbox.OutboxPublicationIntegrationTest",
+              "com.example.medhead.acceptance.EmergencyInterventionAcceptanceTest",
           )
           for name in required_suites:
               report = reports / f"TEST-{name}.xml"
@@ -123,6 +124,15 @@ jobs:
         with:
           name: backend-test-reports-${{ github.sha }}
           path: target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload the Cucumber acceptance report
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cucumber-acceptance-report
+          path: target/cucumber-report.html
           if-no-files-found: warn
           retention-days: 7
 
