@@ -1,0 +1,190 @@
+{
+  "mode": "success",
+  "smoke": true,
+  "started_at": "2026-11-22T13:46:05.914720+00:00",
+  "profile": [
+    {
+      "name": "smoke",
+      "start": 0,
+      "duration": 10,
+      "rate": 10,
+      "ramp": false
+    }
+  ],
+  "beds_per_available_hospital": 100,
+  "environment": {
+    "commit": "298a151ef81d140e9d6881515b2573493cccdc7e",
+    "working_tree_clean": true,
+    "host": {
+      "cpu": "Apple M4",
+      "cpus": 10,
+      "memory_gib": 16.0,
+      "os": "macOS 15.8.1"
+    },
+    "docker": {
+      "server_version": "28.1.1",
+      "operating_system": "Docker Desktop",
+      "cpus": 10,
+      "memory_gib": 15.6,
+      "compose_version": "2.35.1-desktop.1",
+      "project": "medhead-lot24"
+    },
+    "k6_version": "k6 v1.2.1 (go1.24.6, darwin/arm64)",
+    "containers": {
+      "api": {
+        "cpus": 2.0,
+        "memory_mib": 1024,
+        "image": "medhead-lot24-api"
+      },
+      "database": {
+        "cpus": 2.0,
+        "memory_mib": 2048,
+        "image": "medhead-postgis:17"
+      },
+      "identity-database": {
+        "cpus": 0.5,
+        "memory_mib": 256,
+        "image": "postgres:17-alpine"
+      },
+      "keycloak": {
+        "cpus": 1.0,
+        "memory_mib": 1024,
+        "image": "quay.io/keycloak/keycloak:26.8.2"
+      },
+      "redis": {
+        "cpus": 1.0,
+        "memory_mib": 512,
+        "image": "medhead-redis:8.2.10"
+      }
+    },
+    "api_info": {
+      "git": {},
+      "build": {
+        "artifact": "medhead",
+        "name": "MedHead",
+        "time": "2026-11-22T11:09:57.034Z",
+        "version": "0.1.0-SNAPSHOT",
+        "group": "com.example"
+      }
+    }
+  },
+  "k6_exit_code": 0,
+  "k6_warnings": 0,
+  "api_latency": {
+    "passed": false,
+    "threshold_ms": 200,
+    "dropped_iterations": 0,
+    "checks_rate": 1,
+    "phases": [
+      {
+        "phase": "smoke",
+        "target_rate": 10,
+        "duration_s": 10,
+        "planned_requests": 100,
+        "requests": 101,
+        "throughput": 10.1,
+        "error_rate": 0,
+        "p50": 16.113,
+        "p95": 32.901,
+        "p99": 264.654,
+        "max": 363.173,
+        "avg": 24.627297029702973
+      }
+    ],
+    "scenarios": [
+      {
+        "phase": "smoke",
+        "flow": "available",
+        "p50": 16.113,
+        "p95": 32.901,
+        "p99": 264.654,
+        "max": 363.173,
+        "avg": 24.627297029702973
+      }
+    ],
+    "failures": [
+      "smoke: p99 264.654 ms",
+      "smoke/available: p99 264.654 ms"
+    ]
+  },
+  "outbox": {
+    "passed": true,
+    "events": 101,
+    "published": 101,
+    "pending_at_end": 0,
+    "drained_after_peak_s": null,
+    "phases": [
+      {
+        "phase": "smoke",
+        "max_pending": 0,
+        "max_oldest_pending_s": 0.0,
+        "events": 101.0,
+        "published": 101.0,
+        "lag_p50_ms": 8.5,
+        "lag_p95_ms": 213.0,
+        "lag_p99_ms": 472.4,
+        "lag_max_ms": 476.5
+      }
+    ],
+    "failures": []
+  },
+  "consistency": {
+    "passed": true,
+    "matches_http": true,
+    "created_http": 101,
+    "reservations_in_database": 101
+  },
+  "resources": [
+    {
+      "name": "api",
+      "phase": "smoke",
+      "samples": 2,
+      "cpu_mean_percent": 20.9,
+      "cpu_max_percent": 41.5,
+      "mem_max_mib": 362.0
+    },
+    {
+      "name": "database",
+      "phase": "smoke",
+      "samples": 2,
+      "cpu_mean_percent": 5.4,
+      "cpu_max_percent": 8.9,
+      "mem_max_mib": 65.4
+    },
+    {
+      "name": "identity-database",
+      "phase": "smoke",
+      "samples": 2,
+      "cpu_mean_percent": 0.2,
+      "cpu_max_percent": 0.5,
+      "mem_max_mib": 29.3
+    },
+    {
+      "name": "k6 (host)",
+      "phase": "smoke",
+      "samples": 2,
+      "cpu_mean_percent": 1.6,
+      "cpu_max_percent": 2.0,
+      "mem_max_mib": 40.8
+    },
+    {
+      "name": "keycloak",
+      "phase": "smoke",
+      "samples": 2,
+      "cpu_mean_percent": 0.1,
+      "cpu_max_percent": 0.1,
+      "mem_max_mib": 497.1
+    },
+    {
+      "name": "redis",
+      "phase": "smoke",
+      "samples": 2,
+      "cpu_mean_percent": 0.9,
+      "cpu_max_percent": 1.2,
+      "mem_max_mib": 67.5
+    }
+  ],
+  "monitor_errors": [],
+  "actuator_errors": 0,
+  "actuator_error_samples": []
+}

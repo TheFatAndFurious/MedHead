@@ -188,7 +188,8 @@ pour vérifier sa reproductibilité avant de valider le POC.
 Les scripts k6, la préparation des données dédiées et les commandes d'exécution
 sont disponibles dans [le guide d'exécution](../../tests/performance/README.md).
 Les résultats de référence sont versionnés dans ce dossier
-(`resultats-AAAA-MM-JJ.md` et les `summary.json` associés).
+(`resultats-AAAA-MM-JJ.md` et les `summary.json` associés). Dernière
+campagne : [22 novembre 2026](resultats-2026-11-22.md).
 Les campagnes lourdes seront
 d'abord déclenchées explicitement sur l'environnement dédié ; un contrôle
 court pourra ensuite être intégré à la CI.
