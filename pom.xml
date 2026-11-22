@@ -165,6 +165,9 @@
 						<!-- ActuatorInfoTest compares /actuator/info with the version being built. -->
 						<medhead.expected-version>${project.version}</medhead.expected-version>
 					</systemPropertyVariables>
+					<excludes>
+						<exclude>${medhead.acceptance-tests.exclude}</exclude>
+					</excludes>
 				</configuration>
 			</plugin>
 			<!-- Writes git.properties (commit, branch), exposed by /actuator/info. The version and
@@ -185,15 +188,6 @@
 						<includeOnlyProperty>^git\.dirty$</includeOnlyProperty>
 						<includeOnlyProperty>^git\.tags$</includeOnlyProperty>
 					</includeOnlyProperties>
-				</configuration>
-			</plugin>
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-surefire-plugin</artifactId>
-				<configuration>
-					<excludes>
-						<exclude>${medhead.acceptance-tests.exclude}</exclude>
-					</excludes>
 				</configuration>
 			</plugin>
 		</plugins>
