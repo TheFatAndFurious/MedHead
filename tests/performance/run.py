@@ -7,18 +7,23 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import threading
+import time
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from campaign import api_latency_verdict, beds_per_hospital, load_profile, outbox_verdict
 from outbox_metrics import FIELDS, collect
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 COMPOSE = ['docker', 'compose', '-f', str(ROOT / 'docker-compose.performance.yaml')]
 API_URL = 'http://127.0.0.1:58080'
+TOKEN_LIFESPAN = 1800  # accessTokenLifespan of tests/performance/keycloak/medhead-realm.json
+SAMPLE_PERIOD = 5
 
 
 def command(args, **kwargs):
@@ -31,28 +36,108 @@ def sql(source, *variables):
                               *variables], input=source, capture_output=True).stdout
 
 
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def host_description():
+    if platform.system() == 'Darwin':
+        brand, cpus, memory = command(['sysctl', '-n', 'machdep.cpu.brand_string', 'hw.ncpu',
+                                       'hw.memsize'], capture_output=True).stdout.splitlines()
+        return {'cpu': brand, 'cpus': int(cpus), 'memory_gib': round(int(memory) / 1024 ** 3, 1),
+                'os': f'macOS {platform.mac_ver()[0]}'}
+    return {'cpu': platform.processor(), 'cpus': os.cpu_count(), 'os': platform.platform()}
+
+
+def container_limits(container_ids):
+    limits = {}
+    for item in json.loads(command(['docker', 'inspect', *container_ids], capture_output=True).stdout):
+        service = item['Config']['Labels'].get('com.docker.compose.service', item['Name'])
+        host = item['HostConfig']
+        limits[service] = {'cpus': host['NanoCpus'] / 1e9 or None,
+                           'memory_mib': host['Memory'] // 1024 ** 2 or None,
+                           'image': item['Config']['Image']}
+    return limits
+
+
+def outbox_lag(profile, start_epoch):
+    """Publication delay (published_at - occurred_at) per phase of occurrence, in milliseconds."""
+    last = profile[-1]
+    phases = ', '.join(
+        f"('{phase['name']}', {start_epoch + phase['start']:.3f}, "
+        f"{start_epoch + phase['start'] + phase['duration'] + (3600 if phase is last else 0):.3f})"
+        for phase in profile)
+    percentile = 'round(percentile_cont({}) WITHIN GROUP (ORDER BY ms)::numeric, 1)'
+    output = sql(f"""COPY (
+        WITH phase(name, starts, ends) AS (VALUES {phases}),
+        event AS (
+            SELECT p.name, e.published_at, extract(epoch FROM e.published_at - e.occurred_at) * 1000 AS ms
+            FROM event_outbox e JOIN phase p
+              ON extract(epoch FROM e.occurred_at) >= p.starts AND extract(epoch FROM e.occurred_at) < p.ends)
+        SELECT name AS phase, count(*) AS events, count(published_at) AS published,
+               {percentile.format(0.5)} AS lag_p50_ms, {percentile.format(0.95)} AS lag_p95_ms,
+               {percentile.format(0.99)} AS lag_p99_ms, round(max(ms)::numeric, 1) AS lag_max_ms
+        FROM event GROUP BY name) TO STDOUT WITH CSV HEADER;""")
+    rows = list(csv.DictReader(output.splitlines()))
+    for row in rows:
+        for key in row:
+            if key != 'phase':
+                row[key] = float(row[key]) if row[key] else None
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['success', 'mixed'])
     parser.add_argument('--smoke', action='store_true', help='10 requests/s for 10 seconds')
+    parser.add_argument('--peak-rate', type=int, default=int(os.environ.get('PEAK_RATE', 800)),
+                        help='requests/s during the peak (default: $PEAK_RATE or 800)')
+    parser.add_argument('--peak-duration', type=int,
+                        default=int(os.environ.get('PEAK_DURATION', 300)),
+                        help='peak duration in seconds (default: $PEAK_DURATION or 300)')
     args = parser.parse_args()
+    profile = load_profile(args.smoke, args.peak_rate, args.peak_duration)
+    total_duration = profile[-1]['start'] + profile[-1]['duration']
+    if total_duration + 300 > TOKEN_LIFESPAN:
+        parser.error(f'a {total_duration} s campaign would outlive the {TOKEN_LIFESPAN} s access token')
+    beds = beds_per_hospital(profile, args.mode)
     results = ROOT / '.local' / 'performance'
     results.mkdir(parents=True, exist_ok=True)
     # Prevent two campaigns from resetting each other's database.
     with (results / 'campaign.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         output = results / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-                            + '-' + args.mode)
+                            + '-' + args.mode + ('-smoke' if args.smoke else ''))
         output.mkdir()
         command(['k6', 'version'], stdout=(output / 'k6-version.txt').open('w'))
-        command(COMPOSE + ['up', '--build', '-d', '--wait'],
+        # Wait for the API only: one-shot services (TLS generators) make `up --wait` fail.
+        command(COMPOSE + ['up', '--build', '-d', '--wait', '--wait-timeout', '300', 'api'],
                 stdout=(output / 'startup.txt').open('w'))
         command(COMPOSE + ['config'], stdout=(output / 'compose.yaml').open('w'))
-        command(['git', 'rev-parse', 'HEAD'], stdout=(output / 'commit.txt').open('w'))
-        command(['git', 'status', '--short'], stdout=(output / 'working-tree.txt').open('w'))
-        command(['docker', 'info', '--format', '{{json .}}'],
-                stdout=(output / 'docker-info.json').open('w'))
-        print(sql((HERE / 'prepare.sql').read_text()), flush=True)
+        commit = command(['git', 'rev-parse', 'HEAD'], capture_output=True).stdout.strip()
+        working_tree = command(['git', 'status', '--porcelain'], capture_output=True).stdout
+        (output / 'working-tree.txt').write_text(working_tree)
+        docker_info = json.loads(command(['docker', 'info', '--format', '{{json .}}'],
+                                         capture_output=True).stdout)
+        containers = [json.loads(line) for line in command(
+            COMPOSE + ['ps', '--format', 'json'], capture_output=True).stdout.splitlines() if line]
+        container_ids = [container['ID'] for container in containers]
+        services = {container['Name']: container['Service'] for container in containers}
+        with urlopen(f'{API_URL}/actuator/info', timeout=5) as response:
+            api_info = json.load(response)
+        environment = {
+            'commit': commit, 'working_tree_clean': not working_tree.strip(),
+            'host': host_description(),
+            'docker': {'server_version': docker_info['ServerVersion'],
+                       'operating_system': docker_info['OperatingSystem'],
+                       'cpus': docker_info['NCPU'],
+                       'memory_gib': round(docker_info['MemTotal'] / 1024 ** 3, 1),
+                       'compose_version': command(['docker', 'compose', 'version', '--short'],
+                                                  capture_output=True).stdout.strip(),
+                       'project': containers[0]['Project'] if containers else None},
+            'k6_version': (output / 'k6-version.txt').read_text().strip(),
+            'containers': container_limits(container_ids), 'api_info': api_info}
+        print(sql((HERE / 'prepare.sql').read_text(), '-v', f'beds={beds}'), flush=True)
         command(COMPOSE + ['exec', '-T', 'redis', 'sh', '-c',
                 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --tls --cacert /tls/ca.crt '
                 '--sni redis -h redis DEL medhead:reservations'])
@@ -77,12 +162,12 @@ def main():
             with (output / 'outbox.csv').open('w') as log, \
                     (output / 'outbox-metrics.csv').open('a') as metrics_log:
                 writer = csv.DictWriter(metrics_log, fieldnames=FIELDS)
-                log.write('timestamp,pending,oldest_pending_seconds\n')
+                log.write('timestamp,epoch,pending,oldest_pending_seconds\n')
                 while True:
                     try:
-                        row = sql("COPY (SELECT now(), count(*), coalesce(extract(epoch FROM "
-                                  "now() - min(occurred_at)), 0) FROM event_outbox "
-                                  "WHERE published_at IS NULL) TO STDOUT WITH CSV;")
+                        row = sql("COPY (SELECT now(), extract(epoch FROM now()), count(*), "
+                                  "coalesce(extract(epoch FROM now() - min(occurred_at)), 0) "
+                                  "FROM event_outbox WHERE published_at IS NULL) TO STDOUT WITH CSV;")
                         log.write(row)
                         log.flush()
                         writer.writerows(collect(API_URL, previous_metrics, access_token))
@@ -93,19 +178,22 @@ def main():
                     except (URLError, OSError, ValueError, KeyError) as error:
                         monitor_errors.append(str(error))
                         return
-                    if stop.wait(5):
+                    if stop.wait(SAMPLE_PERIOD):
                         return
 
         worker = threading.Thread(target=monitor, daemon=True)
         worker.start()
         try:
             with (output / 'k6.txt').open('w') as log:
-                run = subprocess.run(['k6', 'run', '--no-color', '--quiet',
+                start_epoch = time.time()
+                k6 = subprocess.Popen(['k6', 'run', '--no-color', '--quiet',
                     '--summary-export', str(output / 'summary.json'),
                     '-e', f'MODE={args.mode}', '-e', f'SMOKE={int(args.smoke)}',
+                    '-e', f'PEAK_RATE={args.peak_rate}', '-e', f'PEAK_DURATION={args.peak_duration}',
                     str(HERE / 'reservations.js')], cwd=ROOT, text=True,
                     stdout=log, stderr=subprocess.STDOUT,
                     env={**os.environ, 'MEDHEAD_ACCESS_TOKEN': access_token})
+                k6_exit_code = k6.wait()
         finally:
             stop.set()
             worker.join()
@@ -120,18 +208,40 @@ def main():
         print((output / 'k6.txt').read_text())
         summary = json.loads((output / 'summary.json').read_text())
         created = int(summary['metrics'].get('reservations_created', {}).get('count', 0))
-        consistency = sql((HERE / 'verify.sql').read_text(), '-v', f'created={created}')
+        try:
+            consistency = sql((HERE / 'verify.sql').read_text(), '-v', f'created={created}')
+            consistent = True
+        except subprocess.CalledProcessError as error:
+            consistency = error.stdout + error.stderr
+            consistent = False
         (output / 'consistency.txt').write_text(consistency)
         print(consistency)
-        # Smoke validates wiring, not the five-minute recovery requirement.
-        recovered = args.smoke or pending == 0
-        verdict = {'mode': args.mode, 'smoke': args.smoke, 'k6_exit_code': run.returncode,
-                   'created': created, 'pending_at_end': pending,
-                   'recovery_passed': None if args.smoke else recovered,
-                   'monitor_errors': monitor_errors}
-        (output / 'verdict.json').write_text(json.dumps(verdict, indent=2) + '\n')
+
+        published = int(sql('SELECT count(*) FROM event_outbox WHERE published_at IS NOT NULL;',
+                            '-t', '-A').strip())
+        with (output / 'outbox.csv').open() as log:
+            samples = [{'epoch': float(row['epoch']), 'pending': int(row['pending']),
+                        'oldest': float(row['oldest_pending_seconds'])} for row in csv.DictReader(log)]
+        api = api_latency_verdict(summary, profile, args.mode)
+        outbox = outbox_verdict(samples, outbox_lag(profile, start_epoch), profile, start_epoch,
+                                created, published, pending)
+        verdict = {
+            'mode': args.mode, 'smoke': args.smoke, 'started_at':
+                datetime.fromtimestamp(start_epoch, timezone.utc).isoformat(),
+            'profile': profile, 'beds_per_available_hospital': beds, 'environment': environment,
+            'k6_exit_code': k6_exit_code, 'created': created,
+            # The smoke run validates the chain only, not the requirement.
+            'api_latency': api, 'outbox': outbox, 'consistency_passed': consistent,
+            'monitor_errors': monitor_errors}
+        (output / 'verdict.json').write_text(json.dumps(verdict, indent=2, ensure_ascii=False) + '\n')
+        note = ' (smoke: informative only, cold JVM)' if args.smoke else ''
+        print(f"(a) API latency{note}: {'PASS' if api['passed'] else 'FAIL'} {api['failures']}")
+        print(f"(b) Outbox{note}: {'PASS' if outbox['passed'] else 'FAIL'} {outbox['failures']}")
         print(f'Results: {output}')
-        if run.returncode or not recovered or monitor_errors:
+        failed = not consistent or bool(monitor_errors) or k6_exit_code != 0
+        if not args.smoke:
+            failed = failed or not api['passed'] or not outbox['passed']
+        if failed:
             raise SystemExit(1)
 
 
