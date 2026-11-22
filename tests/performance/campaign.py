@@ -98,8 +98,8 @@ def phase_at(profile, elapsed):
     return profile[-1]['name']
 
 
-def outbox_verdict(samples, lag_rows, profile, start_epoch, created, published, pending_at_end):
-    """Verdict (b): every BedReserved event published once the campaign is over.
+def outbox_verdict(samples, lag_rows, profile, start_epoch, events, published, pending_at_end):
+    """Verdict (b): every BedReserved event in the database published once the campaign is over.
 
     `samples` are outbox.csv rows (epoch, pending, oldest_pending_seconds) and `lag_rows`
     the publication delays per phase computed in PostgreSQL. No numeric publication
@@ -125,8 +125,8 @@ def outbox_verdict(samples, lag_rows, profile, start_epoch, created, published, 
     failures = []
     if pending_at_end:
         failures.append(f'{pending_at_end} events still pending at the end')
-    if published != created:
-        failures.append(f'{published} events published for {created} reservations')
-    return {'passed': not failures, 'created': created, 'published': published,
+    if published != events:
+        failures.append(f'{published} of {events} events published')
+    return {'passed': not failures, 'events': events, 'published': published,
             'pending_at_end': pending_at_end, 'drained_after_peak_s': drained_after_peak,
             'phases': list(per_phase.values()), 'failures': failures}

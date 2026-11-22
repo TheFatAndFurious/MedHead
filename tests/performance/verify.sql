@@ -6,18 +6,20 @@ SELECT current_database() = 'hospital_performance' AS isolated \gset
     DO $$ BEGIN RAISE EXCEPTION 'Expected isolated performance database'; END $$;
 \endif
 
+-- Internal consistency, whatever the client saw: no overbooking, one request record
+-- and one BedReserved event per reservation, beds consumed = reservations.
+SELECT count(*) AS reservations FROM bed_reservation \gset
 SELECT
-    (SELECT count(*) FROM bed_reservation) = :created
-    AND (SELECT count(*) FROM event_outbox) = :created
+    (SELECT count(*) FROM event_outbox) = :reservations
     -- One idempotent request record per reservation (reservation_id is unique).
-    AND (SELECT count(*) FROM reservation_request) = :created
+    AND (SELECT count(*) FROM reservation_request) = :reservations
     AND NOT EXISTS (
         SELECT 1 FROM bed_reservation r
         LEFT JOIN reservation_request q ON q.reservation_id = r.id
         WHERE q.reservation_id IS NULL
     )
-    AND (SELECT sum(b.available_beds - h.available_beds)
-         FROM hospital h JOIN performance_baseline b ON b.hospital_id = h.id) = :created
+    AND (SELECT coalesce(sum(b.available_beds - h.available_beds), 0)
+         FROM hospital h JOIN performance_baseline b ON b.hospital_id = h.id) = :reservations
     AND NOT EXISTS (
         SELECT 1 FROM hospital h JOIN performance_baseline b ON b.hospital_id = h.id
         WHERE b.available_beds - h.available_beds <>
@@ -35,11 +37,21 @@ SELECT
            OR e.payload->>'eventId' IS DISTINCT FROM e.id::text
            OR e.payload->>'hospitalId' IS DISTINCT FROM r.hospital_id::text
            OR e.payload->>'specialtyCode' IS DISTINCT FROM r.specialty_code
-    ) AS consistent \gset
+    ) AS consistent,
+    :reservations = :created AS matches_http \gset
+
+-- Reconciliation with the 201 responses received by k6. A request that timed out on
+-- the client may still have been committed, so a mismatch alone is not corruption.
+\if :matches_http
+    \echo 'PASS: database reservations match the' :created '201 responses'
+\else
+    \echo 'MISMATCH:' :reservations 'reservations in database,' :created '201 responses received'
+\endif
+
 \if :consistent
     \echo 'PASS: beds, reservations and outbox are consistent'
 \else
-    \echo 'FAIL: beds, reservations or outbox differ from HTTP results'
+    \echo 'FAIL: beds, reservations or outbox are inconsistent'
     DO $$ BEGIN RAISE EXCEPTION 'Performance data consistency check failed'; END $$;
 \endif
 

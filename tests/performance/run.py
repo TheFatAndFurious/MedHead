@@ -244,9 +244,13 @@ def main():
             consistent = False
         (output / 'consistency.txt').write_text(consistency)
         print(consistency)
+        # A request that timed out on the client may still have been committed by the API.
+        matches_http = 'PASS: database reservations match' in consistency
 
-        published = int(sql('SELECT count(*) FROM event_outbox WHERE published_at IS NOT NULL;',
-                            '-t', '-A').strip())
+        reservations, events, published = (int(value) for value in sql(
+            'SELECT (SELECT count(*) FROM bed_reservation), (SELECT count(*) FROM event_outbox), '
+            '(SELECT count(*) FROM event_outbox WHERE published_at IS NOT NULL);',
+            '-t', '-A', '-F', ' ').split())
         with (output / 'outbox.csv').open() as log:
             samples = [{'epoch': float(row['epoch']), 'pending': int(row['pending']),
                         'oldest': float(row['oldest_pending_seconds'])} for row in csv.DictReader(log)]
@@ -254,20 +258,24 @@ def main():
             resource_rows = list(csv.DictReader(log))
         api = api_latency_verdict(summary, profile, args.mode)
         outbox = outbox_verdict(samples, outbox_lag(profile, start_epoch), profile, start_epoch,
-                                created, published, pending)
+                                events, published, pending)
         verdict = {
             'mode': args.mode, 'smoke': args.smoke, 'started_at':
                 datetime.fromtimestamp(start_epoch, timezone.utc).isoformat(),
             'profile': profile, 'beds_per_available_hospital': beds, 'environment': environment,
-            'k6_exit_code': k6_exit_code, 'created': created,
+            'k6_exit_code': k6_exit_code,
             # The smoke run validates the chain only, not the requirement.
-            'api_latency': api, 'outbox': outbox, 'consistency_passed': consistent,
+            'api_latency': api, 'outbox': outbox,
+            'consistency': {'passed': consistent, 'matches_http': matches_http,
+                            'created_http': created, 'reservations_in_database': reservations},
             'resources': resource_usage.summarize(resource_rows, profile, start_epoch, phase_at),
             'monitor_errors': monitor_errors}
         (output / 'verdict.json').write_text(json.dumps(verdict, indent=2, ensure_ascii=False) + '\n')
         note = ' (smoke: informative only, cold JVM)' if args.smoke else ''
         print(f"(a) API latency{note}: {'PASS' if api['passed'] else 'FAIL'} {api['failures']}")
         print(f"(b) Outbox{note}: {'PASS' if outbox['passed'] else 'FAIL'} {outbox['failures']}")
+        print(f'Data consistency: {"PASS" if consistent else "FAIL"}; '
+              f'{reservations} reservations in database, {created} 201 responses received')
         print(f'Results: {output}')
         failed = not consistent or bool(monitor_errors) or k6_exit_code != 0
         if not args.smoke:
