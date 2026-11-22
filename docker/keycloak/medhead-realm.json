@@ -23,7 +23,7 @@
       "protocol": "openid-connect",
       "publicClient": false,
       "fullScopeAllowed": true,
-      "defaultClientScopes": ["profile", "roles"],
+      "defaultClientScopes": ["basic", "profile", "roles"],
       "clientAuthenticatorType": "client-secret",
       "secret": "${KEYCLOAK_CLIENT_SECRET}",
       "standardFlowEnabled": true,
