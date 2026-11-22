@@ -120,7 +120,7 @@ jobs:
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: backend-test-reports
+          name: backend-test-reports-${{ github.sha }}
           path: target/surefire-reports/
           if-no-files-found: warn
           retention-days: 7
@@ -129,7 +129,7 @@ jobs:
         if: ${{ always() && steps.maven.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: backend-jar
+          name: backend-jar-${{ github.sha }}
           path: target/*.jar
           if-no-files-found: error
           retention-days: 7
@@ -156,3 +156,4 @@ jobs:
       - name: Stop the test environment
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         run: docker compose -f docker-compose.test.yaml down --volumes --remove-orphans
+
