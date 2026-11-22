@@ -2,6 +2,7 @@ import unittest
 
 from campaign import (api_latency_verdict, beds_per_hospital, load_profile, outbox_verdict,
                       phase_at)
+from resource_usage import parse_docker_stats, summarize, to_mib
 
 
 def trend(p95, p99=None):
@@ -90,6 +91,32 @@ class OutboxVerdictTest(unittest.TestCase):
         verdict = outbox_verdict([], [], self.profile, 1000, 100, 90, 10)
         self.assertFalse(verdict['passed'])
         self.assertEqual(len(verdict['failures']), 2)
+
+
+class ResourceUsageTest(unittest.TestCase):
+    def test_docker_stats_sizes_are_converted_to_mib(self):
+        self.assertEqual(to_mib('1GiB'), 1024)
+        self.assertEqual(to_mib('512KiB'), 0.5)
+        self.assertEqual(to_mib('1.5MB'), 1.4)
+
+    def test_docker_stats_rows_use_the_compose_service_name(self):
+        line = ('{"Name":"medhead-lot24-api-1","CPUPerc":"153.20%","MemUsage":"612.5MiB / 1GiB",'
+                '"PIDs":"61"}')
+        row = parse_docker_stats([line, ''], {'medhead-lot24-api-1': 'api'}, 't', 12.0)[0]
+        self.assertEqual((row['name'], row['cpu_percent'], row['mem_used_mib'], row['mem_limit_mib'],
+                          row['pids']), ('api', 153.2, 612.5, 1024, 61))
+
+    def test_summary_groups_samples_by_resource_and_phase(self):
+        profile = load_profile(False)
+        rows = [{'name': 'api', 'epoch': 100 + 430, 'cpu_percent': 150, 'mem_used_mib': 600},
+                {'name': 'api', 'epoch': 100 + 435, 'cpu_percent': 190, 'mem_used_mib': 650},
+                {'name': 'api', 'epoch': 100 + 200, 'cpu_percent': 20, 'mem_used_mib': 500}]
+        result = summarize(rows, profile, 100, phase_at)
+        self.assertEqual(result, [
+            {'name': 'api', 'phase': 'nominal', 'samples': 1, 'cpu_mean_percent': 20.0,
+             'cpu_max_percent': 20.0, 'mem_max_mib': 500.0},
+            {'name': 'api', 'phase': 'peak', 'samples': 2, 'cpu_mean_percent': 170.0,
+             'cpu_max_percent': 190.0, 'mem_max_mib': 650.0}])
 
 
 if __name__ == '__main__':

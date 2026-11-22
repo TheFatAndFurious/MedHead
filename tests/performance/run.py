@@ -15,8 +15,10 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from campaign import api_latency_verdict, beds_per_hospital, load_profile, outbox_verdict
+from campaign import (api_latency_verdict, beds_per_hospital, load_profile, outbox_verdict,
+                      phase_at)
 from outbox_metrics import FIELDS, collect
+import resource_usage
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -181,8 +183,32 @@ def main():
                     if stop.wait(SAMPLE_PERIOD):
                         return
 
-        worker = threading.Thread(target=monitor, daemon=True)
-        worker.start()
+        k6_process = {}
+
+        def sample_resources():
+            # docker stats --no-stream takes about two seconds: keep a fixed period.
+            with (output / 'resources.csv').open('w') as log:
+                writer = csv.DictWriter(log, fieldnames=resource_usage.FIELDS)
+                writer.writeheader()
+                while True:
+                    began = time.time()
+                    try:
+                        rows = resource_usage.sample_containers(container_ids, services, utc_now(), began)
+                        if 'pid' in k6_process:
+                            rows += resource_usage.sample_process(k6_process['pid'], 'k6 (host)',
+                                                             utc_now(), time.time())
+                    except (subprocess.CalledProcessError, ValueError, KeyError) as error:
+                        monitor_errors.append(f'resources: {error}')
+                        return
+                    writer.writerows(rows)
+                    log.flush()
+                    if stop.wait(max(0.0, SAMPLE_PERIOD - (time.time() - began))):
+                        return
+
+        workers = [threading.Thread(target=target, daemon=True)
+                   for target in (monitor, sample_resources)]
+        for worker in workers:
+            worker.start()
         try:
             with (output / 'k6.txt').open('w') as log:
                 start_epoch = time.time()
@@ -193,10 +219,12 @@ def main():
                     str(HERE / 'reservations.js')], cwd=ROOT, text=True,
                     stdout=log, stderr=subprocess.STDOUT,
                     env={**os.environ, 'MEDHEAD_ACCESS_TOKEN': access_token})
+                k6_process['pid'] = k6.pid
                 k6_exit_code = k6.wait()
         finally:
             stop.set()
-            worker.join()
+            for worker in workers:
+                worker.join()
         # Capture the tail of the last interval and recovery before slow SQL checks.
         try:
             with (output / 'outbox-metrics.csv').open('a') as metrics_log:
@@ -222,6 +250,8 @@ def main():
         with (output / 'outbox.csv').open() as log:
             samples = [{'epoch': float(row['epoch']), 'pending': int(row['pending']),
                         'oldest': float(row['oldest_pending_seconds'])} for row in csv.DictReader(log)]
+        with (output / 'resources.csv').open() as log:
+            resource_rows = list(csv.DictReader(log))
         api = api_latency_verdict(summary, profile, args.mode)
         outbox = outbox_verdict(samples, outbox_lag(profile, start_epoch), profile, start_epoch,
                                 created, published, pending)
@@ -232,6 +262,7 @@ def main():
             'k6_exit_code': k6_exit_code, 'created': created,
             # The smoke run validates the chain only, not the requirement.
             'api_latency': api, 'outbox': outbox, 'consistency_passed': consistent,
+            'resources': resource_usage.summarize(resource_rows, profile, start_epoch, phase_at),
             'monitor_errors': monitor_errors}
         (output / 'verdict.json').write_text(json.dumps(verdict, indent=2, ensure_ascii=False) + '\n')
         note = ' (smoke: informative only, cold JVM)' if args.smoke else ''
