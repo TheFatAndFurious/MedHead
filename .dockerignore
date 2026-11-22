@@ -1,0 +1,10 @@
+.git
+.idea
+.env
+.local
+target
+frontend
+*.iml
+*.log
+README.md
+HELP.md

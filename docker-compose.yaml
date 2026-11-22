@@ -65,6 +65,10 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgis-data:/var/lib/postgresql/data
+      - postgis-tls:/tls:ro
+    depends_on:
+      database-tls:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD-SHELL
@@ -76,6 +80,18 @@ services:
     restart: unless-stopped
     networks:
       - backend
+
+  database-tls:
+    build:
+      context: .
+      dockerfile: docker/postgis/Dockerfile
+    image: medhead-postgis:17
+    entrypoint: ["/bin/sh", "/usr/local/bin/generate-tls.sh"]
+    volumes:
+      - postgis-tls:/tls
+      - postgis-ca:/client-ca
+    network_mode: none
+    restart: "no"
 
   redis-tls:
     build:
@@ -120,7 +136,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://database:5432/${POSTGRES_DB:-hospital}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://database:5432/${POSTGRES_DB:-hospital}?sslmode=verify-full&sslrootcert=/etc/postgres-ca/ca.crt
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hospital_app}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-validate}
@@ -141,6 +157,7 @@ services:
       KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/medhead/protocol/openid-connect/certs
     volumes:
       - redis-ca:/etc/redis-ca:ro
+      - postgis-ca:/etc/postgres-ca:ro
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8080"
     depends_on:
@@ -192,8 +209,11 @@ services:
     image: medhead-postgis:17
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/postgres-ca/ca.crt
     volumes:
       - ./docker/seed:/seed:ro
+      - postgis-ca:/etc/postgres-ca:ro
     depends_on:
       api:
         condition: service_healthy
@@ -217,8 +237,11 @@ services:
       - maintenance
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/postgres-ca/ca.crt
     volumes:
       - ./docker/seed:/seed:ro
+      - postgis-ca:/etc/postgres-ca:ro
     depends_on:
       api:
         condition: service_healthy
@@ -242,8 +265,11 @@ services:
       - performance
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/postgres-ca/ca.crt
     volumes:
       - ./docker/seed:/seed:ro
+      - postgis-ca:/etc/postgres-ca:ro
     depends_on:
       api:
         condition: service_healthy
@@ -267,8 +293,11 @@ services:
       - maintenance
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:-hospital_app}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/postgres-ca/ca.crt
     volumes:
       - ./docker/seed:/seed:ro
+      - postgis-ca:/etc/postgres-ca:ro
     depends_on:
       api:
         condition: service_healthy
@@ -305,6 +334,8 @@ services:
 volumes:
   keycloak-data:
   postgis-data:
+  postgis-tls:
+  postgis-ca:
   pgadmin-data:
   redis-data:
   redis-tls:

@@ -14,11 +14,21 @@ services:
       - "127.0.0.1:${TEST_POSTGRES_PORT:-55432}:5432"
     tmpfs:
       - /var/lib/postgresql/data
+    volumes:
+      - postgis-tls:/tls:ro
+    depends_on:
+      database-tls:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hospital_test -d hospital_test"]
       interval: 1s
       timeout: 3s
       retries: 30
+
+  database-tls:
+    extends:
+      file: docker-compose.yaml
+      service: database-tls
 
   redis-tls:
     extends:
@@ -35,6 +45,8 @@ services:
       - "127.0.0.1:${TEST_REDIS_PORT:-56379}:6379"
 
 volumes:
+  postgis-tls:
+  postgis-ca:
   redis-data:
   redis-tls:
   redis-ca:

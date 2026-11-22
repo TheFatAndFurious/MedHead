@@ -28,6 +28,11 @@ services:
       POSTGRES_PASSWORD: hospital_perf
     ports: !override []
 
+  database-tls:
+    extends:
+      file: docker-compose.yaml
+      service: database-tls
+
   redis-tls:
     extends:
       file: docker-compose.yaml
@@ -45,7 +50,7 @@ services:
       file: docker-compose.yaml
       service: api
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://database:5432/hospital_performance
+      SPRING_DATASOURCE_URL: jdbc:postgresql://database:5432/hospital_performance?sslmode=verify-full&sslrootcert=/etc/postgres-ca/ca.crt
       SPRING_DATASOURCE_USERNAME: hospital_perf
       SPRING_DATASOURCE_PASSWORD: hospital_perf
       REDIS_PASSWORD: medhead_perf
@@ -57,6 +62,8 @@ services:
 volumes:
   keycloak-data:
   postgis-data:
+  postgis-tls:
+  postgis-ca:
   redis-data:
   redis-tls:
   redis-ca:

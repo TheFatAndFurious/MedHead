@@ -53,7 +53,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @EnabledIfSystemProperty(named = "medhead.redis-integration-tests", matches = "true")
 @ActiveProfiles("redis")
 @SpringBootTest(properties = {
-		"spring.datasource.url=${medhead.test.jdbc-url:jdbc:postgresql://localhost:55432/hospital_test}",
+		"spring.datasource.url=${medhead.test.jdbc-url:jdbc:postgresql://localhost:55432/hospital_test?sslmode=verify-full&sslrootcert=.local/postgres-tests/ca.crt}",
 		"spring.datasource.username=hospital_test",
 		"spring.datasource.password=hospital_test",
 		"spring.data.redis.host=localhost",
