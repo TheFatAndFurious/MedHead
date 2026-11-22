@@ -41,8 +41,8 @@ def _trend(metric):
 
 
 def api_latency_verdict(summary, profile, mode, threshold_ms=THRESHOLD_MS):
-    """Verdict (a): p95 and p99 below the threshold in every measured phase, no technical error,
-    every planned request sent and no dropped iteration."""
+    """Verdict (a): p95 and p99 below the threshold in every measured phase, overall and for each
+    business flow, no technical error, every planned request sent and no dropped iteration."""
     metrics = summary['metrics']
     flows = ['available', 'unavailable'] if mode == 'mixed' else ['available']
     phases, scenarios, failures = [], [], []
@@ -69,10 +69,17 @@ def api_latency_verdict(summary, profile, mode, threshold_ms=THRESHOLD_MS):
             failures.append(f'{name}: HTTP error rate {errors}')
         if requests < row['planned_requests']:
             failures.append(f'{name}: {requests} requests sent, {row["planned_requests"]} planned')
+        # Each expected business outcome is judged too: a fast flow must not hide a slow one.
         for flow in flows:
             scenario = metrics.get(f'http_req_duration{{scenario:{name}_{flow}}}')
-            if scenario is not None:
-                scenarios.append({'phase': name, 'flow': flow, **_trend(scenario)})
+            if scenario is None:
+                failures.append(f'{name}/{flow}: no latency measured')
+                continue
+            scenarios.append({'phase': name, 'flow': flow, **_trend(scenario)})
+            for stat in ('p95', 'p99'):
+                value = scenarios[-1][stat]
+                if value is None or value >= threshold_ms:
+                    failures.append(f'{name}/{flow}: {stat} {value} ms')
     dropped = int(metrics.get('dropped_iterations', {}).get('count', 0))
     if dropped:
         failures.append(f'{dropped} dropped iterations')

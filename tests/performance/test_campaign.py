@@ -9,8 +9,8 @@ def trend(p95, p99=None):
     return {'avg': 10, 'med': 8, 'p(95)': p95, 'p(99)': p99 if p99 is not None else p95, 'max': 300}
 
 
-def summary(profile, latency=None, errors=0.0, dropped=0, checks=1, missing=0):
-    latency = latency or {}
+def summary(profile, latency=None, errors=0.0, dropped=0, checks=1, missing=0, flows=None):
+    latency, flows = latency or {}, flows or {}
     metrics = {'checks': {'value': checks}, 'dropped_iterations': {'count': dropped}}
     for phase in profile:
         if phase['ramp']:
@@ -19,7 +19,8 @@ def summary(profile, latency=None, errors=0.0, dropped=0, checks=1, missing=0):
         metrics[f'http_req_duration{{phase:{name}}}'] = latency.get(name, trend(20, 40))
         metrics[f'http_reqs{{phase:{name}}}'] = {'count': phase['rate'] * phase['duration'] - missing}
         metrics[f'http_req_failed{{phase:{name}}}'] = {'value': errors}
-        metrics[f'http_req_duration{{scenario:{name}_available}}'] = trend(20, 40)
+        metrics[f'http_req_duration{{scenario:{name}_available}}'] = flows.get(name, trend(20, 40))
+        metrics[f'http_req_duration{{scenario:{name}_unavailable}}'] = trend(20, 40)
     return {'metrics': metrics}
 
 
@@ -61,6 +62,13 @@ class ApiLatencyVerdictTest(unittest.TestCase):
                                       self.profile, 'success')
         self.assertFalse(verdict['passed'])
         self.assertEqual(verdict['failures'], ['peak: p99 250 ms'])
+
+    def test_a_slow_business_flow_fails_even_when_the_phase_is_fast(self):
+        verdict = api_latency_verdict(summary(self.profile, flows={'peak': trend(150, 280)}),
+                                      self.profile, 'mixed')
+        self.assertFalse(verdict['passed'])
+        self.assertEqual(verdict['failures'], ['peak/available: p99 280 ms'])
+        self.assertEqual(len(verdict['scenarios']), 6)
 
     def test_errors_dropped_iterations_and_missing_requests_fail(self):
         verdict = api_latency_verdict(summary(self.profile, errors=0.001, dropped=3, missing=1),

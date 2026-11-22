@@ -119,7 +119,8 @@ et affichés en fin de campagne. Le second ne masque pas le premier.
 800 requêtes par seconde, par instance ». Pour chaque phase mesurée (nominal,
 pic, récupération ; l'échauffement est exclu) :
 
-- p95 **et** p99 de `http_req_duration` strictement inférieurs à 200 ms ;
+- p95 **et** p99 de `http_req_duration` strictement inférieurs à 200 ms,
+  pour la phase entière et pour chaque flux métier (réservations, refus) ;
 - 0 % d'erreur HTTP technique (statut inattendu, délai de 2 s dépassé, erreur
   réseau) ;
 - toutes les requêtes prévues envoyées, aucune itération abandonnée
