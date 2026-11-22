@@ -228,3 +228,39 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
             BUILD_DATE=${{ steps.version.outputs.build-date }}
 
+  # Release: on a vX.Y.Z tag, once the images are published, builds the JAR with
+  # version X.Y.Z and attaches it to a GitHub Release with generated notes.
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            pom.xml
+            .mvn/wrapper/maven-wrapper.properties
+
+      # The tests already passed in backend-ci for this commit.
+      - name: Build the JAR with the tag version
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress -DgenerateBackupPoms=false \
+            versions:set -DnewVersion="${GITHUB_REF_NAME#v}"
+          ./mvnw --batch-mode --no-transfer-progress -DskipTests clean package
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" target/*.jar --verify-tag --generate-notes
