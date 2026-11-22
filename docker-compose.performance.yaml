@@ -35,7 +35,9 @@ services:
       POSTGRES_USER: hospital_perf
       POSTGRES_PASSWORD: hospital_perf
     ports: !override []
-    cpus: 2
+    # Reference: 2 CPUs. PERF_DATABASE_CPUS raises it to check whether the API itself holds
+    # the load once the database is no longer the bottleneck.
+    cpus: ${PERF_DATABASE_CPUS:-2}
     mem_limit: 2g
 
   database-tls:

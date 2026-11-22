@@ -65,6 +65,15 @@ démarre une seule API et fixe explicitement les limites de chaque conteneur :
 | `keycloak` | 1 | 1 Gio | Émet un seul jeton et ses clés pendant la campagne |
 | `identity-database` | 0,5 | 256 Mio | Base de Keycloak |
 
+La limite CPU de PostgreSQL se règle par `PERF_DATABASE_CPUS` (2 par défaut,
+configuration de référence), par exemple pour vérifier si l'API tient la charge
+quand la base n'est plus le facteur limitant :
+
+```sh
+PERF_DATABASE_CPUS=4 python3 tests/performance/run.py success
+```
+
+`verdict.json` enregistre les limites effectives de chaque conteneur.
 Les autres réglages de l'API restent ceux par défaut (Tomcat, pool HikariCP
 de 10 connexions, lots outbox de 100 événements). k6 tourne sur l'hôte, sans
 limite : il dispose des cœurs restants. Sur une machine de 10 cœurs, les
