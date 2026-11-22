@@ -21,6 +21,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 	const response = await resolve(event);
 	response.headers.set('Cache-Control', 'private, no-store');
-	response.headers.set('Referrer-Policy', 'no-referrer');
+	// Not no-referrer: browsers would then send "Origin: null" with native form
+	// posts (logout), which the origin checks refuse. same-origin still sends no
+	// referrer to other sites, Keycloak included.
+	response.headers.set('Referrer-Policy', 'same-origin');
 	return response;
 };

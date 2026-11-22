@@ -60,7 +60,11 @@ attribut `Domain`. En HTTPS, il porte le préfixe `__Host-` et l’attribut `Sec
 Toutes les requêtes de modification vers SvelteKit exigent un en-tête `Origin`
 égal à `MEDHEAD_PUBLIC_ORIGIN`, y compris les requêtes JSON et la déconnexion.
 La protection d’origine native de SvelteKit reste également active.
-Les réponses ne doivent pas être mises en cache et utilisent `no-referrer`.
+Les réponses ne doivent pas être mises en cache et utilisent la politique
+`Referrer-Policy: same-origin` : aucun référent n’est transmis aux autres sites,
+Keycloak compris. `no-referrer` n’est pas utilisable : avec cette politique, les
+navigateurs envoient `Origin: null` lors de l’envoi d’un formulaire natif, comme
+celui de la déconnexion, et les deux contrôles d’origine le refusent.
 
 ## Contrôle des droits
 
