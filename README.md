@@ -624,6 +624,230 @@ modification et obtenir une nouvelle exécution réussie. Une fois le contrôle
 visible sur GitHub, ajouter `backend-ci` aux contrôles obligatoires de la règle
 de protection de `master` pour conditionner la fusion à sa réussite.
 
+## Workflow Git
+
+Le dépôt suit **GitHub Flow** : toute modification part d'une issue, se fait
+sur une branche courte et rejoint `master` par une pull request validée par la
+CI et relue. Cette section décrit le circuit complet, pour qu'une nouvelle
+personne puisse l'appliquer sans aide.
+
+### Modèle retenu : GitHub Flow
+
+- `master` est **toujours livrable** : chaque commit qui y arrive a passé la CI
+  et une relecture.
+- Le travail se fait sur des **branches courtes**, créées depuis un `master` à
+  jour et fusionnées dès qu'elles sont prêtes, en quelques jours au plus.
+- Les versions sont des **tags** posés sur `master`, pas des branches.
+
+**Pourquoi pas GitFlow ?** GitFlow ajoute des branches longues (`develop`,
+`release/*`, `hotfix/*`). Il est utile quand plusieurs versions sont maintenues
+en parallèle avec des livraisons planifiées. MedHead est une preuve de concept,
+portée par une petite équipe, avec une seule version en service et une
+intégration et une livraison continues. Des branches longues retarderaient
+l'intégration : les conflits s'accumuleraient et la CI ne validerait
+l'ensemble qu'au moment de la release. Avec GitHub Flow, chaque changement est
+intégré et testé avec le reste du code dès qu'il est prêt.
+
+### Cycle d'une modification
+
+1. **Issue** : décrire le besoin avec le modèle « Tâche » (contexte, tâches,
+   définition de terminé, critères couverts). Avant de commencer, vérifier
+   que l'issue n'a pas le label `en-cours`, puis l'ajouter.
+2. **Branche créée depuis l'issue**, à partir d'un `master` à jour :
+
+   ```bash
+   git switch master
+   git pull
+   gh issue develop 20 --base master --name docs/20-workflow-git --checkout
+   ```
+
+   `gh issue develop` lie la branche à l'issue : elle apparaît dans la rubrique
+   **Development** de l'issue. Pour travailler sur plusieurs branches en même
+   temps, utiliser un worktree dédié plutôt que de changer de branche :
+   `git worktree add ../medhead-20 docs/20-workflow-git`.
+3. **Commits** petits et thématiques, au format Conventional Commits, avec
+   `Refs #N` en pied (voir plus bas).
+4. **Pull request** vers `master` :
+
+   ```bash
+   git push -u origin docs/20-workflow-git
+   gh pr create --base master
+   ```
+
+   Le [modèle de PR](.github/pull_request_template.md) est prérempli : la
+   description doit contenir `Closes #N` pour fermer l'issue à la fusion.
+5. **CI verte et relecture** : les jobs `frontend-ci` et `backend-ci` doivent
+   réussir. Les corrections demandées en relecture sont ajoutées par de
+   nouveaux commits sur la même branche.
+6. **Fusion en merge commit** par le relecteur, depuis GitHub ou avec
+   `gh pr merge --merge --delete-branch`. L'issue se ferme automatiquement.
+7. **Suppression de la branche** : la branche distante est supprimée à la
+   fusion ; en local, `git switch master && git pull && git branch -d <branche>`
+   (et `git worktree remove <dossier>` si un worktree a été utilisé).
+
+### Nommage des branches
+
+Format : `<type>/<n° issue>-<sujet-court>`, en minuscules, sans accents, avec
+des tirets. Le numéro relie la branche à son issue ; le type annonce la nature
+du changement et reprend les types de commit ci-dessous (`feat`, `fix`, `test`,
+`ci`, `docs`, `chore`, `refactor`).
+
+Exemples réels du dépôt :
+
+| Branche | Issue | Contenu |
+| --- | --- | --- |
+| `chore/19-remettre-depot-aplomb` | #19 | Remise d'aplomb du dépôt (PR #28) |
+| `docs/20-workflow-git` | #20 | Cette section et les modèles GitHub |
+| `ci/21-artefacts-tracables` | #21 | Artefacts versionnés et traçables |
+| `test/23-e2e-playwright` | #23 | Tests de bout en bout Playwright |
+
+### Messages de commit : Conventional Commits
+
+Les commits suivent [Conventional Commits](https://www.conventionalcommits.org/fr/) :
+
+```text
+<type>(<portée facultative>): <résumé à l'impératif, 72 caractères au plus>
+
+<corps : pourquoi ce changement, ce qu'il corrige ou rend possible>
+
+Refs #19
+```
+
+| Type | Usage |
+| --- | --- |
+| `feat` | Nouvelle fonctionnalité |
+| `fix` | Correction de bug |
+| `docs` | Documentation seule |
+| `test` | Ajout ou correction de tests |
+| `refactor` | Restructuration sans changement de comportement |
+| `ci` | Workflows GitHub Actions |
+| `build` | Outillage de construction (Maven, Dockerfile) |
+| `chore` | Entretien du dépôt (`.gitignore`, fichiers obsolètes) |
+
+Exemples réels, pris dans l'historique de `master` :
+
+```text
+feat(db): enforce TLS verify-full between the API and PostgreSQL
+ci: add GitHub Actions workflow for the front-end and the back-end
+refactor: align the source folder name with the package name
+chore: stop tracking Python bytecode
+build: add maven wrapper configuration
+```
+
+Règles :
+
+- **Un sujet par commit** : jamais de commit « fourre-tout ».
+- Le **corps** explique le *pourquoi* ; le *quoi* se lit dans le diff.
+- Le **pied** référence l'issue : `Refs #N` sur chaque commit de la branche,
+  `Closes #N` dans la description de la PR. Un commit qui règle à lui seul une
+  autre issue peut la fermer directement (`Closes #11` dans `471095c`).
+- Un changement incompatible est signalé par `!` après le type
+  (`feat!: ...`) ou par un pied `BREAKING CHANGE:` ; il impose une nouvelle
+  version majeure.
+- Les messages sont rédigés en anglais, comme le code. La convention
+  s'applique depuis le lot #19 ; les premiers commits du dépôt la précèdent.
+
+### Protection de `master`
+
+La règle de protection de `master` (**Settings → Branches** du dépôt GitHub)
+impose :
+
+- **pull request obligatoire** : aucun push direct sur `master`, y compris
+  pour les administrateurs ;
+- **contrôles requis** : `frontend-ci` et `backend-ci`, puis `e2e` dès que ce
+  job existe ([#23](https://github.com/TheFatAndFurious/MedHead/issues/23)) ;
+  une PR dont un contrôle est rouge ou en cours ne peut pas être fusionnée ;
+- la fusion est faite par le relecteur, après relecture de la PR.
+
+### Stratégie de fusion : merge commit
+
+Les PR sont fusionnées en **merge commit** (ni squash, ni rebase) :
+
+- les commits atomiques de la branche sont conservés tels quels, avec leur
+  message et leur référence à l'issue ;
+- le commit de fusion porte le numéro de la PR et le nom de la branche, par
+  exemple `Merge pull request #28 from TheFatAndFurious/chore/19-remettre-depot-aplomb` ;
+- on remonte ainsi d'une ligne de code à son commit, à sa PR, puis à son
+  issue (issue ↔ branche ↔ PR ↔ commits) ;
+- `git log --first-parent --oneline master` affiche une ligne par PR fusionnée,
+  `git log --graph --oneline` montre les branches ;
+- un lot complet peut être annulé d'un coup avec `git revert -m 1 <commit de fusion>`.
+
+Un squash réduirait la branche à un seul commit et perdrait le détail ; un
+rebase effacerait la frontière de la branche et le lien visible avec la PR.
+
+### Versions et tags
+
+Les versions suivent [SemVer](https://semver.org/lang/fr/) : `vMAJEUR.MINEUR.CORRECTIF`.
+Le correctif augmente pour une correction compatible, le mineur pour une
+fonctionnalité compatible, le majeur pour un changement incompatible. Tant
+que le projet reste une preuve de concept, les versions sont en `0.y.z`.
+
+Un tag annoté est posé **sur `master` uniquement**, après la fusion des PR
+concernées :
+
+```bash
+git switch master
+git pull
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Le push d'un tag `v*` déclenche la publication des artefacts versionnés
+(images Docker et release GitHub), décrite dans la section
+[Intégration continue](#intégration-continue) ; ces jobs sont ajoutés par
+[#21](https://github.com/TheFatAndFurious/MedHead/issues/21). Un tag publié
+n'est jamais déplacé : une erreur se corrige par une nouvelle version.
+
+### Correctifs
+
+Un correctif suit **le même circuit** que le reste : issue, branche
+`fix/<n° issue>-<sujet>` créée depuis `master`, PR, CI verte, relecture et
+merge commit. Il n'y a pas de branche `hotfix` séparée : `master` est toujours
+livrable et une seule version est en service. Si le correctif doit être livré,
+on pose ensuite un tag de version corrective (par exemple `v0.1.1`).
+
+### Vue d'ensemble
+
+Le diagramme illustre le circuit avec les branches des premiers lots ; le tag
+est un exemple.
+
+```mermaid
+%%{init: {'gitGraph': {'mainBranchName': 'master', 'rotateCommitLabel': false}}}%%
+gitGraph
+  commit id: "initial"
+  branch chore/19-remettre-depot-aplomb
+  checkout chore/19-remettre-depot-aplomb
+  commit id: "ci"
+  commit id: "refactor"
+  checkout master
+  merge chore/19-remettre-depot-aplomb id: "fusion 19"
+  branch docs/20-workflow-git
+  checkout master
+  branch ci/21-artefacts-tracables
+  checkout docs/20-workflow-git
+  commit id: "docs"
+  checkout ci/21-artefacts-tracables
+  commit id: "build"
+  commit id: "publish"
+  checkout master
+  merge docs/20-workflow-git id: "fusion 20"
+  merge ci/21-artefacts-tracables id: "fusion 21" tag: "v0.1.0"
+```
+
+### Pourquoi des commits atomiques, des branches et des merges
+
+- **Revue facilitée** : une PR courte, découpée en commits qui traitent chacun
+  un sujet, se relit commit par commit.
+- **Retour arrière ciblé** : un commit atomique s'annule avec `git revert`
+  sans emporter le reste ; un merge commit permet d'annuler un lot entier.
+- **CI isolée par changement** : chaque branche est testée seule avant
+  d'atteindre `master`, donc un échec désigne directement le changement fautif
+  et `master` reste livrable.
+- **Historique qui documente le *pourquoi*** : le corps des commits, la PR et
+  l'issue liée expliquent les décisions, et `git blame` ou `git log` y mènent
+  depuis n'importe quelle ligne.
+
 ## Données de démonstration
 
 Le seeding normal est idempotent : il remet à jour le nom, la position et la
