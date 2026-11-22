@@ -104,11 +104,13 @@ class SecurityConfigurationTest {
 	}
 
 	@Test
-	void healthProbesRemainPublicAndOtherEndpointsAreDenied() throws Exception {
+	void healthProbesAndBuildInfoArePublicReadOnlyAndOtherEndpointsAreDenied() throws Exception {
+		String regulator = "Bearer " + token(ISSUER, "medhead-api", List.of("REGULATEUR"), Instant.now().plusSeconds(300), KEY);
 		mvc.perform(get("/actuator/health/readiness")).andExpect(status().isOk());
-		mvc.perform(get("/actuator/info").header("Authorization", "Bearer " +
-				token(ISSUER, "medhead-api", List.of("REGULATEUR"), Instant.now().plusSeconds(300), KEY)))
-				.andExpect(status().isForbidden());
+		mvc.perform(get("/actuator/info")).andExpect(status().isOk());
+		mvc.perform(post("/actuator/info")).andExpect(status().isUnauthorized());
+		mvc.perform(post("/actuator/info").header("Authorization", regulator)).andExpect(status().isForbidden());
+		mvc.perform(get("/actuator/env").header("Authorization", regulator)).andExpect(status().isForbidden());
 		mvc.perform(post("/logout").header("Authorization", "Bearer " +
 				token(ISSUER, "medhead-api", List.of("REGULATEUR"), Instant.now().plusSeconds(300), KEY)))
 				.andExpect(status().isForbidden());
@@ -165,8 +167,11 @@ class SecurityConfigurationTest {
 	@RestController
 	static class TestEndpoints {
 		int reservations;
-		@GetMapping({"/api/v1/hospitals", "/api/v1/specialties", "/actuator/health/readiness", "/actuator/info"})
+		@GetMapping({"/api/v1/hospitals", "/api/v1/specialties", "/actuator/health/readiness", "/actuator/info",
+				"/actuator/env"})
 		String get() { return "ok"; }
+		@PostMapping("/actuator/info")
+		String postInfo() { return "ok"; }
 		@GetMapping("/error")
 		@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
 		String failure() { return "error"; }

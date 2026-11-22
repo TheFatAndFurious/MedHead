@@ -58,6 +58,8 @@ public class SecurityConfiguration {
 						.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
 						.requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/liveness",
 								"/actuator/health/readiness").permitAll()
+						// Build version and git commit only: lets anyone trace a running artifact.
+						.requestMatchers(HttpMethod.GET, "/actuator/info").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/hospitals", "/api/v1/specialties")
 						.hasAnyRole("LECTEUR", "REGULATEUR")
 						.requestMatchers(HttpMethod.POST, "/api/v1/hospitals/reservations").hasRole("REGULATEUR")
