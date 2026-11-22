@@ -145,6 +145,8 @@ def main():
                 '--sni redis -h redis DEL medhead:reservations'])
         stop = threading.Event()
         monitor_errors = []
+        # An overloaded API also delays Actuator: count these timeouts, keep sampling the outbox.
+        actuator_errors = []
         previous_metrics = {}
 
         # A dedicated service account exists only in the isolated performance realm.
@@ -172,12 +174,16 @@ def main():
                                   "FROM event_outbox WHERE published_at IS NULL) TO STDOUT WITH CSV;")
                         log.write(row)
                         log.flush()
-                        writer.writerows(collect(API_URL, previous_metrics, access_token))
-                        metrics_log.flush()
                     except subprocess.CalledProcessError as error:
                         monitor_errors.append(error.stderr)
                         return
-                    except (URLError, OSError, ValueError, KeyError) as error:
+                    try:
+                        writer.writerows(collect(API_URL, previous_metrics, access_token))
+                        metrics_log.flush()
+                    except (URLError, OSError) as error:
+                        actuator_errors.append(f'{utc_now()} {error}')
+                    except (ValueError, KeyError) as error:
+                        # A counter reset means the API restarted: the campaign is not valid.
                         monitor_errors.append(str(error))
                         return
                     if stop.wait(SAMPLE_PERIOD):
@@ -229,11 +235,17 @@ def main():
         try:
             with (output / 'outbox-metrics.csv').open('a') as metrics_log:
                 csv.DictWriter(metrics_log, fieldnames=FIELDS).writerows(collect(API_URL, previous_metrics, access_token))
-        except (URLError, OSError, ValueError, KeyError) as error:
+        except (URLError, OSError) as error:
+            actuator_errors.append(f'{utc_now()} {error}')
+        except (ValueError, KeyError) as error:
             monitor_errors.append(str(error))
         pending = int(sql('SELECT count(*) FROM event_outbox WHERE published_at IS NULL;',
                           '-t', '-A').strip())
-        print((output / 'k6.txt').read_text())
+        # Failed requests each log a warning: print the summary, not hundreds of thousands of lines.
+        k6_lines = (output / 'k6.txt').read_text().splitlines()
+        warnings = [line for line in k6_lines if 'level=warning' in line]
+        print('\n'.join(line for line in k6_lines if 'level=warning' not in line))
+        print(f'{len(warnings)} k6 warnings (failed requests) in k6.txt')
         summary = json.loads((output / 'summary.json').read_text())
         created = int(summary['metrics'].get('reservations_created', {}).get('count', 0))
         try:
@@ -263,19 +275,22 @@ def main():
             'mode': args.mode, 'smoke': args.smoke, 'started_at':
                 datetime.fromtimestamp(start_epoch, timezone.utc).isoformat(),
             'profile': profile, 'beds_per_available_hospital': beds, 'environment': environment,
-            'k6_exit_code': k6_exit_code,
+            'k6_exit_code': k6_exit_code, 'k6_warnings': len(warnings),
             # The smoke run validates the chain only, not the requirement.
             'api_latency': api, 'outbox': outbox,
             'consistency': {'passed': consistent, 'matches_http': matches_http,
                             'created_http': created, 'reservations_in_database': reservations},
             'resources': resource_usage.summarize(resource_rows, profile, start_epoch, phase_at),
-            'monitor_errors': monitor_errors}
+            'monitor_errors': monitor_errors, 'actuator_errors': len(actuator_errors),
+            'actuator_error_samples': actuator_errors[:5]}
         (output / 'verdict.json').write_text(json.dumps(verdict, indent=2, ensure_ascii=False) + '\n')
         note = ' (smoke: informative only, cold JVM)' if args.smoke else ''
         print(f"(a) API latency{note}: {'PASS' if api['passed'] else 'FAIL'} {api['failures']}")
         print(f"(b) Outbox{note}: {'PASS' if outbox['passed'] else 'FAIL'} {outbox['failures']}")
         print(f'Data consistency: {"PASS" if consistent else "FAIL"}; '
               f'{reservations} reservations in database, {created} 201 responses received')
+        if actuator_errors:
+            print(f'{len(actuator_errors)} Actuator samples failed (overloaded API)')
         print(f'Results: {output}')
         failed = not consistent or bool(monitor_errors) or k6_exit_code != 0
         if not args.smoke:
