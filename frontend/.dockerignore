@@ -6,3 +6,5 @@ build
 .env.*
 npm-debug.log*
 README.md
+playwright-report
+test-results
