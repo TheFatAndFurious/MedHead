@@ -488,15 +488,79 @@ seule, une fois la base de test démarrée et son certificat copié :
 ./mvnw -Dmedhead.integration-tests=true -Dtest=EmergencyInterventionAcceptanceTest test
 ```
 
+### Tests de bout en bout (E2E)
+
+Les tests [Playwright](https://playwright.dev/) de `frontend/e2e/` pilotent
+Chromium sur la stack de démonstration complète : front-end, API, Keycloak,
+PostGIS et Redis. Ils vérifient cinq parcours :
+
+| Parcours | Résultat attendu |
+| --- | --- |
+| Régulateur, Secteur Westminster, Cardiologie | L'hôpital retenu, la distance et la référence de réservation s'affichent |
+| Régulateur, Secteur Westminster, Allergie | Le message d'absence de lit s'affiche, sans réservation |
+| Lecteur | Message de lecture seule, formulaire désactivé ; l'action envoyée directement au serveur est refusée (`403`) |
+| Visiteur non connecté | Seul « Se connecter » est proposé ; le lien mène à la page de connexion Keycloak |
+| Déconnexion | La session MedHead est fermée, et la session Keycloak aussi : une reconnexion redemande les identifiants |
+
+Prérequis : Docker avec le plugin Compose, Node 24 et npm. Les tests utilisent
+les ports fixes de la démonstration (`5432`, `8080`, `5173`, `8180`), imposés
+par les URL de retour enregistrées dans Keycloak : arrêter toute autre stack de
+démonstration avant de commencer. Partir d'une stack fraîche, car Keycloak
+n'importe le realm qu'au premier démarrage.
+
+```bash
+export COMPOSE_PROJECT_NAME=medhead-e2e
+cp .env.example .env
+docker compose up --build -d --wait --wait-timeout 300 api frontend
+cd frontend
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+La commande `up` n'attend que les services `api` et `frontend` (et leurs
+dépendances). Sans liste de services, `--wait` renvoie le code `1` alors que la
+stack est saine : le service ponctuel `seed` se termine après le chargement des
+données, et Compose compte cet arrêt comme un échec. Les données sont chargées
+par les tests eux-mêmes : avant la suite, le `globalSetup` de Playwright lance
+`docker compose --profile maintenance run --rm --no-deps reset-seed`, qui
+recrée les 12 hôpitaux de démonstration avec leurs lits initiaux. Chaque
+exécution part donc des mêmes données, même si `seed` n'a pas tourné.
+
+Le rapport HTML est écrit dans `frontend/playwright-report/` et s'ouvre avec
+`npx playwright show-report`. Les captures des tests en échec sont dans
+`frontend/test-results/`. En CI, un test en échec est relancé une fois avec
+une trace Playwright.
+
+Variables utiles :
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `E2E_BASE_URL` | `http://localhost:5173` | Origine du front-end testé. Elle doit être égale à `MEDHEAD_PUBLIC_ORIGIN` : utiliser `localhost`, pas `127.0.0.1` |
+| `E2E_RESET_SEED` | (activé) | `false` conserve les données en place au lieu de lancer `reset-seed` |
+| `KEYCLOAK_URL` | `http://localhost:8180` | Origine de Keycloak, comme dans `.env` |
+| `KEYCLOAK_REGULATEUR_PASSWORD`, `KEYCLOAK_LECTEUR_PASSWORD` | Valeurs de `.env.example` | Mots de passe des comptes de démonstration |
+
+Terminer par :
+
+```bash
+cd ..
+docker compose down -v
+unset COMPOSE_PROJECT_NAME
+```
+
+`npm test` ne lance pas ces tests : il se limite aux tests unitaires de
+`frontend/tests/`.
+
 ## Intégration continue
 
-Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute deux
-jobs, `frontend-ci` et `backend-ci`, pour les pull requests ciblant `master`,
-les push sur `master` et les tags `v*`. Il peut aussi être lancé manuellement
-depuis l'onglet **Actions**, une fois le workflow présent sur la branche par
-défaut. Deux jobs de livraison s'y ajoutent, jamais sur une pull request :
-`publish` publie les images sur GHCR et `release` crée une GitHub Release (voir
-[Versionnage et livraison](#versionnage-et-livraison)).
+Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute trois
+jobs, `frontend-ci`, `backend-ci` et `e2e`, pour les pull requests ciblant
+`master`, les push sur `master` et les tags `v*`. Il peut aussi être lancé
+manuellement depuis l'onglet **Actions**, une fois le workflow présent sur la
+branche par défaut. Deux jobs de livraison s'y ajoutent, jamais sur une pull
+request : `publish` publie les images sur GHCR et `release` crée une GitHub
+Release (voir [Versionnage et livraison](#versionnage-et-livraison)).
 
 Le job `frontend-ci` utilise Node 24 : il installe les dépendances avec `npm ci`,
 lance les tests, la vérification Svelte et la compilation, puis construit les
@@ -562,8 +626,8 @@ déploiement et les tests de charge feront l'objet de workflows distincts.
 | Push sur `master` | `0.1.0-SNAPSHOT` (`pom.xml`) | `sha-<7 caractères>` et `master` |
 | Tag `vX.Y.Z` | `X.Y.Z` pour le JAR de la release et l'image (l'artefact `backend-jar-<sha>` reste en SNAPSHOT) | `X.Y.Z` et `latest` |
 
-Après la réussite de `frontend-ci` et `backend-ci`, le job `publish` construit
-et publie deux images :
+Après la réussite de `frontend-ci`, `backend-ci` et `e2e`, le job `publish`
+construit et publie deux images :
 
 | Image | Dockerfile |
 | --- | --- |
@@ -618,6 +682,21 @@ Le workflow teste le commit taggé, publie les images `0.1.0` et `latest`, puis
 crée la release `v0.1.0` avec `medhead-0.1.0.jar`. La version du `pom.xml`
 reste en `-SNAPSHOT` ; la passer à la version suivante (par exemple
 `0.2.0-SNAPSHOT`) dans une pull request ultérieure.
+
+### Job `e2e`
+
+Le job `e2e` démarre après la réussite de `frontend-ci` et de `backend-ci`. Il
+est limité à 25 minutes et utilise un nom de projet Compose propre à
+l'exécution. Il copie `.env.example` dans `.env`, construit et démarre la stack
+de démonstration avec `docker compose up --build -d --wait --wait-timeout 300
+api frontend`, installe les dépendances et Chromium, puis lance
+`npm run test:e2e` (voir « Tests de bout en bout » ci-dessus). Le nettoyage
+`docker compose down --volumes --remove-orphans` s'exécute toujours.
+
+| Artefact | Contenu | Disponibilité |
+| --- | --- | --- |
+| `playwright-report-<sha>` | Rapport HTML Playwright, avec les traces des tests relancés | Toujours, si le rapport existe |
+| `e2e-docker-diagnostics` | État des conteneurs et logs Compose | En cas d'échec du job |
 
 ### Reproduire les étapes principales en local
 
@@ -710,8 +789,8 @@ intégré et testé avec le reste du code dès qu'il est prêt.
 
    Le [modèle de PR](.github/pull_request_template.md) est prérempli : la
    description doit contenir `Closes #N` pour fermer l'issue à la fusion.
-5. **CI verte et relecture** : les jobs `frontend-ci` et `backend-ci` doivent
-   réussir. Les corrections demandées en relecture sont ajoutées par de
+5. **CI verte et relecture** : les jobs `frontend-ci`, `backend-ci` et `e2e`
+   doivent réussir. Les corrections demandées en relecture sont ajoutées par de
    nouveaux commits sur la même branche.
 6. **Fusion en merge commit** par le relecteur, depuis GitHub ou avec
    `gh pr merge --merge --delete-branch`. L'issue se ferme automatiquement.

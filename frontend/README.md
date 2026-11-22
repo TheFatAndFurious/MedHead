@@ -162,6 +162,25 @@ Vérifier les sessions, les cookies et la protection CSRF :
 docker compose -f docker-compose.yaml -f docker-compose.dev.yaml run --build --rm --no-deps frontend npm test
 ```
 
+Les tests de bout en bout Playwright (`e2e/`) pilotent Chromium sur la stack
+complète démarrée par Docker Compose. Ils demandent Node et npm sur la machine
+hôte :
+
+```bash
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+La stack doit être démarrée depuis la racine du dépôt avec
+`docker compose up --build -d --wait --wait-timeout 300 api frontend`. Avant la
+suite, les tests remettent les données de démonstration à zéro avec
+`reset-seed`. Le rapport HTML est dans `playwright-report/`
+(`npx playwright show-report`). Les prérequis, les parcours couverts et les
+variables sont décrits dans la section « Tests de bout en bout » du
+[README principal](../README.md#tests-de-bout-en-bout-e2e). `npm test` ne
+lance pas ces tests.
+
 La compilation avec l’adaptateur Node est vérifiée en construisant l’image de
 démonstration :
 
