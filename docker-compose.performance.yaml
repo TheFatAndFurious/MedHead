@@ -1,10 +1,15 @@
 name: medhead-performance
 
+# Explicit resources so that "per instance" is measurable: one API instance limited to
+# 2 CPUs and 1 GiB. The other containers are limited too, so that the remaining host
+# cores stay available to k6, which runs on the host. Documented in tests/performance/README.md.
 services:
   identity-database:
     extends:
       file: docker-compose.yaml
       service: identity-database
+    cpus: 0.5
+    mem_limit: 256m
 
   keycloak:
     extends:
@@ -17,6 +22,9 @@ services:
       - "127.0.0.1:58180:8080"
     volumes: !override
       - ./tests/performance/keycloak:/opt/keycloak/data/import:ro
+    # Keycloak only issues one token and its JWKS during a campaign.
+    cpus: 1
+    mem_limit: 1g
 
   database:
     extends:
@@ -27,6 +35,10 @@ services:
       POSTGRES_USER: hospital_perf
       POSTGRES_PASSWORD: hospital_perf
     ports: !override []
+    # Reference: 2 CPUs. PERF_DATABASE_CPUS raises it to check whether the API itself holds
+    # the load once the database is no longer the bottleneck.
+    cpus: ${PERF_DATABASE_CPUS:-2}
+    mem_limit: 2g
 
   database-tls:
     extends:
@@ -44,6 +56,8 @@ services:
       service: redis
     environment:
       REDIS_PASSWORD: medhead_perf
+    cpus: 1
+    mem_limit: 512m
 
   api:
     extends:
@@ -56,8 +70,13 @@ services:
       REDIS_PASSWORD: medhead_perf
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics
       KEYCLOAK_ISSUER_URI: http://localhost:58180/realms/medhead
+      # Heap up to 75 % of the container memory (the JVM default is 25 %).
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
     ports: !override
       - "127.0.0.1:58080:8080"
+    # The single API instance measured against "800 req/s per instance".
+    cpus: 2
+    mem_limit: 1g
 
 volumes:
   keycloak-data:

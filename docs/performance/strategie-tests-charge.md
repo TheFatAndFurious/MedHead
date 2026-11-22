@@ -3,8 +3,14 @@
 ## Objectif et outil retenu
 
 Vérifier que l'API de réservation supporte une charge nominale de **80 requêtes
-par seconde** et un **pic de 800 requêtes par seconde**, avec un **p95 strictement
-inférieur à 200 ms**. Le pic ne représente pas une charge soutenue permanente.
+par seconde** et un **pic de 800 requêtes par seconde**, avec un temps de réponse
+**strictement inférieur à 200 ms au p95 et au p99**, **par instance de service**.
+Le pic ne représente pas une charge soutenue permanente ; il est tenu cinq
+minutes pour observer un régime établi et non un simple à-coup.
+
+Une seule instance d'API est mesurée, limitée à 2 CPU et 1 Gio de mémoire ;
+les limites des autres conteneurs sont fixées et documentées dans
+[le guide d'exécution](../../tests/performance/README.md#ressources-allouées--par-instance-).
 
 L'outil retenu est **Grafana k6** : scénarios HTTP versionnés dans le dépôt,
 débit d'arrivée imposé et critères de réussite automatisables. Les tests
@@ -20,19 +26,22 @@ Ils ne remplacent pas les tests unitaires et d'intégration existants.
 - `400`, `5xx`, délais dépassés et erreurs de transport sont des échecs.
 - Aucun appel de recherche séparé, aucune relance automatique des requêtes.
   Chaque nouvel appel peut créer une nouvelle réservation.
-- Les durées ci-dessous et la répartition 50/50 du scénario mixte sont des
-  hypothèses de campagne proposées, à confirmer lors de l'implémentation.
+- La répartition 50/50 du scénario mixte est une hypothèse de campagne.
+  La durée du pic se règle par `PEAK_DURATION` (5 minutes par défaut,
+  60 secondes pour reproduire les premières campagnes).
 
 ## Profil de charge commun
 
-| Phase | Débit d'arrivée | Durée proposée | Nombre de requêtes prévu |
+| Phase | Débit d'arrivée | Durée | Nombre de requêtes prévu |
 | --- | --- | --- | --- |
 | Échauffement | Rampe linéaire de 0 à 80 req/s | 2 min | Environ 4 800 |
 | Nominal | 80 req/s | 5 min | 24 000 |
-| Pic | Passage immédiat à 800 req/s | 1 min | 48 000 |
+| Pic | Passage immédiat à 800 req/s | 5 min | 240 000 |
 | Récupération | Retour immédiat à 80 req/s | 5 min | 24 000 |
 
-La campagne dure 13 minutes et prévoit environ **100 800 requêtes**.
+La campagne dure 17 minutes et prévoit environ **292 800 requêtes**.
+Les premières campagnes (octobre 2026) tenaient le pic une minute
+(13 minutes, 100 800 requêtes).
 L'échauffement est exclu des critères de latence. Les trois autres phases
 sont évaluées séparément ; une bonne latence nominale ne doit pas masquer
 un dépassement pendant le pic.
@@ -47,9 +56,11 @@ prévue ne valide pas l'objectif.
 
 ### A — Capacité suffisante
 
-Toutes les demandes doivent obtenir un `201`. Préparer plus de 100 800 lits
-disponibles, avec une marge proposée de 20 %, soit au moins **121 000 lits**
-accessibles aux spécialités et aux coordonnées utilisées. Le total global
+Toutes les demandes doivent obtenir un `201`. Préparer plus de 292 800 lits
+disponibles, avec une marge de 20 %, soit au moins **351 400 lits**
+accessibles aux spécialités et aux coordonnées utilisées (220 lits pour
+chacun des 1 600 hôpitaux disponibles ; le runner adapte ce nombre à la
+durée du pic). Le total global
 ne suffit pas : vérifier la capacité de chaque groupe de demandes et les
 capacités partagées entre spécialités.
 
@@ -65,7 +76,7 @@ Proposition initiale : 50 % des demandes doivent obtenir un `201`, 50 % un
 la répartition, plutôt que laisser l'épuisement des lits la déterminer.
 
 - Flux avec disponibilité : spécialités connues avec capacité suffisante
-  pour environ 50 400 réservations, soit au moins **60 500 lits** avec marge.
+  pour environ 146 400 réservations, soit au moins **175 700 lits** avec marge.
 - Flux sans disponibilité : spécialités connues sans aucun lit disponible
   dans tous les hôpitaux qui leur sont associés.
 
@@ -88,18 +99,29 @@ réapprovisionner les lits pendant la mesure.
 
 ## Critères de réussite
 
+Deux verdicts sont produits séparément ; le second ne doit pas masquer le premier.
+
+**(a) Latence de l'API**, critère de l'exigence :
+
 | Mesure | Critère |
 | --- | --- |
 | Débit | Débit prévu effectivement généré dans chaque phase ; aucune itération abandonnée |
-| Latence HTTP | p95 < 200 ms, par phase mesurée, globalement et séparément pour chaque résultat métier attendu |
-| Réponses | Aucun statut inattendu, échec réseau ou dépassement du délai client |
+| Latence HTTP | p95 **et** p99 < 200 ms, par phase mesurée, globalement et séparément pour chaque résultat métier attendu |
+| Réponses | 0 % d'erreur technique : aucun statut inattendu, échec réseau ou dépassement du délai client |
 | Scénario A | Toutes les demandes aboutissent à un `201` |
 | Scénario B | Chaque flux retourne le statut métier prévu |
-| Cohérence | Aucun lit négatif, aucune surréservation ; une réservation et un événement outbox par `201` |
+
+**(b) Santé de l'outbox**, critère secondaire : plus aucun événement en
+attente à la fin de la récupération, et un événement publié par réservation.
+Le retard de publication et le nombre d'événements en attente sont rapportés
+par phase, sans seuil chiffré (voir plus bas).
+
+**Cohérence** : aucun lit négatif, aucune surréservation ; une réservation et
+un événement outbox par `201`.
 
 Mesurer le temps de requête HTTP k6 `http_req_duration`, pas le temps complet
-d'une itération ni le délai de publication Redis. Rapporter également p50,
-p99 et maximum pour rendre visibles les réponses au-delà du p95. Vérifier
+d'une itération ni le délai de publication Redis. Rapporter également p50
+et maximum pour rendre visibles les réponses au-delà du p99. Vérifier
 les champs essentiels des réponses `201`, dont l'identifiant de réservation.
 Configurer explicitement les statuts attendus dans k6 : un `404` prévu ne
 doit pas être compté comme une erreur technique, et un `404` dans le scénario
@@ -121,6 +143,11 @@ Collecter les mesures pendant les mêmes fenêtres temporelles :
 - Redis : latence d'écriture, mémoire et erreurs de publication.
 - Générateur : CPU, mémoire, débit effectif et itérations abandonnées.
 
+Le runner relève automatiquement, toutes les cinq secondes, `docker stats`
+pour chaque conteneur (API, PostgreSQL, Redis, Keycloak) et le processus k6
+de l'hôte, ainsi que l'état de l'outbox. Les autres mesures listées
+ci-dessus demandent une instrumentation complémentaire.
+
 Avec 100 événements par passage et une seconde entre passages, le réglage
 de référence du publieur ne peut pas suivre durablement 800 réservations/s sur une
 seule instance. Il peut aussi être trop juste à 80/s selon le coût des envois.
@@ -131,8 +158,8 @@ notification lorsque l'outbox est vide, avec une lecture de rattrapage au
 démarrage et après reconnexion. Les erreurs et les événements encore verrouillés
 déclenchent une tentative différée, pas un polling permanent de la table vide.
 
-Un retard temporaire pendant le pic est acceptable pour cette campagne si
-l'API respecte ses critères. Vérifier ensuite que le retard revient au niveau
+Un retard temporaire pendant le pic est acceptable si l'API respecte ses
+critères : il relève du verdict (b), pas du verdict (a). Vérifier ensuite que le retard revient au niveau
 initial et que les latences nominales respectent à nouveau le seuil pendant
 les cinq minutes de récupération. S'il reste du retard, le noter comme un
 échec du critère de récupération ; une observation supplémentaire peut servir
@@ -160,6 +187,9 @@ pour vérifier sa reproductibilité avant de valider le POC.
 
 Les scripts k6, la préparation des données dédiées et les commandes d'exécution
 sont disponibles dans [le guide d'exécution](../../tests/performance/README.md).
+Les résultats de référence sont versionnés dans ce dossier
+(`resultats-AAAA-MM-JJ.md` et les `summary.json` associés). Dernière
+campagne : [22 novembre 2026](resultats-2026-11-22.md).
 Les campagnes lourdes seront
 d'abord déclenchées explicitement sur l'environnement dédié ; un contrôle
 court pourra ensuite être intégré à la CI.

@@ -13,14 +13,20 @@ const created = new Counter('reservations_created');
 const refused = new Counter('reservations_refused');
 const successCallback = http.expectedStatuses(201);
 const unavailableCallback = http.expectedStatuses(404);
+// The peak is tunable; campaign.py (run.py) computes the same phases and sizes the beds.
+const peakRate = Number(__ENV.PEAK_RATE || 800);
+const peakDuration = Number(__ENV.PEAK_DURATION || 300);
+if (!(peakRate > 0 && peakDuration > 0)) throw new Error('PEAK_RATE and PEAK_DURATION must be positive');
 const phases = smoke
   ? [{ name: 'smoke', start: 0, duration: 10, rate: 10 }]
   : [
       { name: 'warmup', start: 0, duration: 120, rate: 80, ramp: true },
       { name: 'nominal', start: 120, duration: 300, rate: 80 },
-      { name: 'peak', start: 420, duration: 60, rate: 800 },
-      { name: 'recovery', start: 480, duration: 300, rate: 80 },
+      { name: 'peak', start: 420, duration: peakDuration, rate: peakRate },
+      { name: 'recovery', start: 420 + peakDuration, duration: 300, rate: 80 },
     ];
+// Verdict (a): p95 and p99 per phase. The smoke run starts on a cold JVM and keeps p95 only.
+const latency = smoke ? ['p(95)<200'] : ['p(95)<200', 'p(99)<200'];
 const scenarios = {};
 const thresholds = {
   checks: ['rate==1'],
@@ -46,14 +52,19 @@ for (const phase of phases) {
         : { rate, duration: `${phase.duration}s` }),
     };
     if (!phase.ramp) {
-      thresholds[`http_req_duration{scenario:${name}}`] = ['p(95)<200'];
+      thresholds[`http_req_duration{scenario:${name}}`] = latency;
       const expectedStatus = flow === 'available' ? 201 : 404;
-      thresholds[`http_req_duration{scenario:${name},status:${expectedStatus}}`] = ['p(95)<200'];
+      thresholds[`http_req_duration{scenario:${name},status:${expectedStatus}}`] = latency;
       // One HTTP request per iteration; verify the phase was actually exercised.
       thresholds[`http_reqs{scenario:${name}}`] = [`count>=${rate * phase.duration}`];
     }
   }
-  if (!phase.ramp) thresholds[`http_req_duration{phase:${phase.name}}`] = ['p(95)<200'];
+  if (!phase.ramp) {
+    thresholds[`http_req_duration{phase:${phase.name}}`] = latency;
+    // Exported per phase for the report: technical errors and requests actually sent.
+    thresholds[`http_req_failed{phase:${phase.name}}`] = ['rate==0'];
+    thresholds[`http_reqs{phase:${phase.name}}`] = [`count>=${phase.rate * phase.duration}`];
+  }
 }
 
 export const options = {

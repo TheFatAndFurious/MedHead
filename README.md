@@ -1004,7 +1004,12 @@ mais leurs événements outbox restent conservés.
 Les scénarios k6 et leur environnement isolé sont décrits dans le
 [guide des tests de charge](tests/performance/README.md). Ils couvrent les
 réservations réussies et les refus faute de lit, à 80 req/s avec un pic à
-800 req/s et un objectif p95 inférieur à 200 ms.
+800 req/s tenu cinq minutes, sur une seule instance d'API limitée à 2 CPU et
+1 Gio. Le runner rend deux verdicts séparés : (a) latence de l'API, p95 et p99
+inférieurs à 200 ms ; (b) santé de l'outbox. Les campagnes de charge utilisent
+leurs propres données, qui reprennent les emplacements de ce jeu avec plus de
+lits. Les résultats de référence sont versionnés dans
+[`docs/performance/`](docs/performance/).
 
 Pour démarrer également pgAdmin :
 
