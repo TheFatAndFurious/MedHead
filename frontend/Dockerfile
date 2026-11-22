@@ -42,4 +42,14 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/build ./build
 
+# Traceability (OCI annotations): the CI passes the commit, the version and the build date.
+ARG VCS_REF=unknown
+ARG VERSION=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="medhead-frontend" \
+      org.opencontainers.image.source="https://github.com/TheFatAndFurious/MedHead" \
+      org.opencontainers.image.revision="$VCS_REF" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.created="$BUILD_DATE"
+
 CMD ["node", "build"]
