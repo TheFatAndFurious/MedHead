@@ -456,6 +456,38 @@ lors du démarrage Docker, puis passer les valeurs correspondantes via
 `-Dmedhead.test.redis-port=PORT`. `-Dmedhead.test.redis-ca=file:/chemin/ca.crt`
 permet d'utiliser un autre emplacement de certificat public.
 
+### Tests d'acceptation (Cucumber)
+
+Le scénario du document d'exigences est exécuté tel quel par Cucumber, en
+français, dans
+[`intervention-urgence.feature`](src/test/resources/features/intervention-urgence.feature).
+Le fichier contient trois scénarios :
+
+1. le scénario du document d'exigences, recopié mot pour mot avec la table des
+   hôpitaux Fred Brooks, Julia Crusher et Beverly Bashir : une urgence en
+   cardiologie près de Fred Brooks y réserve un lit, et l'événement
+   `BedReserved` est écrit dans l'outbox ;
+2. une urgence tout près de Julia Crusher, compétente mais complète : Fred
+   Brooks est proposé, ce qui prouve le filtre sur les lits disponibles ;
+3. une spécialité qu'aucun de ces hôpitaux ne propose : la demande est refusée
+   (`404`), sans lit consommé ni événement.
+
+Les étapes (`com.example.medhead.acceptance`) démarrent l'application complète
+sur la même base PostGIS TLS de test que les autres tests d'intégration. Elles
+appellent l'API REST avec MockMvc, un jeton de rôle `REGULATEUR` et un en-tête
+`Idempotency-Key`. Chaque scénario crée ses propres hôpitaux (codes `PDF-…`)
+et les supprime ensuite : il ne dépend pas du jeu de démonstration.
+
+La suite `EmergencyInterventionAcceptanceTest` fait partie de `./mvnw verify`
+dès que `-Dmedhead.integration-tests=true` est passé (profil Maven
+`integration-tests`) ; sans cette propriété, Surefire ne la lance pas. Le
+rapport HTML est écrit dans `target/cucumber-report.html`. Pour la lancer
+seule, une fois la base de test démarrée et son certificat copié :
+
+```bash
+./mvnw -Dmedhead.integration-tests=true -Dtest=EmergencyInterventionAcceptanceTest test
+```
+
 ## Intégration continue
 
 Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute deux
@@ -487,8 +519,9 @@ Les étapes s'exécutent dans cet ordre :
 4. Exécuter `clean verify` avec les deux propriétés d'intégration activées :
    les tests unitaires et d'intégration sont exécutés, puis le JAR est créé.
 5. Vérifier les rapports JUnit de `DatabaseTlsIntegrationTest`,
-   `HospitalCatalogIntegrationTest`, `BedReservationIntegrationTest` et
-   `OutboxPublicationIntegrationTest`.
+   `HospitalCatalogIntegrationTest`, `BedReservationIntegrationTest`,
+   `OutboxPublicationIntegrationTest` et de la suite d'acceptation Cucumber
+   `EmergencyInterventionAcceptanceTest`.
    Le job échoue si un rapport manque,
    si une suite n'a exécuté aucun test ou si elle contient des tests ignorés,
    des échecs ou des erreurs.
@@ -507,6 +540,7 @@ GitHub Actions pendant sept jours :
 | Artefact | Contenu | Disponibilité |
 | --- | --- | --- |
 | `backend-test-reports-<sha>` | Rapports XML et texte de `target/surefire-reports/` | Même après un échec, si Maven a produit des rapports |
+| `cucumber-acceptance-report-<sha>` | Rapport HTML des scénarios d'acceptation (`target/cucumber-report.html`) | Même après un échec, si Cucumber a produit le rapport |
 | `backend-jar-<sha>` | JAR de l'application, avec sa version et son commit | Après un `clean verify` réussi, même si la construction Docker échoue ensuite |
 | `backend-docker-diagnostics` | État des conteneurs et logs Compose | En cas d'échec du job avant le nettoyage |
 
