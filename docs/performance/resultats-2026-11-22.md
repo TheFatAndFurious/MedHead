@@ -8,24 +8,40 @@ commandes : [guide d'exécution](../../tests/performance/README.md).
 
 ## Synthèse
 
-| Campagne | Pic | (a) Latence de l'API | (b) Outbox | Cohérence interne |
-| --- | --- | --- | --- | --- |
-| Réservations réussies | 800 req/s, 5 min | **Échec** : saturation, 95 % d'erreurs au pic | **Échec** | Conforme |
-| Mixte (50 % `201`, 50 % `404`) | 800 req/s, 5 min | **Échec** : p95 8,1 ms mais p99 1 005 ms, 0,21 % d'erreurs | **Échec** | Conforme |
-| Réservations réussies (exploratoire) | 400 req/s, 5 min | **Réussi** : p95 6,0 ms, p99 15,1 ms | **Échec** | Conforme |
+Dans toutes les campagnes, l'API est limitée à 2 CPU et 1 Gio. Seule la
+limite CPU de PostgreSQL change : 2 CPU dans la configuration de référence,
+4 CPU dans la campagne complémentaire.
+
+| Campagne | PostgreSQL | Pic | (a) Latence de l'API (pic) | (b) Outbox | Cohérence interne |
+| --- | --- | --- | --- | --- | --- |
+| Réservations réussies | 2 CPU (référence) | 800 req/s, 5 min | **Échec** : saturation, 95 % d'erreurs | **Échec** | Conforme |
+| Mixte (50 % `201`, 50 % `404`) | 2 CPU (référence) | 800 req/s, 5 min | **Échec** : p95 8,1 ms mais p99 1 005 ms, 0,21 % d'erreurs | **Échec** | Conforme |
+| Réservations réussies (exploratoire) | 2 CPU (référence) | 400 req/s, 5 min | **Réussi** : p95 6,0 ms, p99 15,1 ms | **Échec** | Conforme |
+| Réservations réussies | **4 CPU** (complémentaire) | 800 req/s, 5 min | **Réussi** : p95 10,0 ms, p99 29,5 ms, 0 erreur | **Échec** | Conforme |
+| Mixte | **4 CPU** (complémentaire) | 800 req/s, 5 min | **Réussi** : p95 4,3 ms, p99 8,6 ms, 0 erreur | **Échec** | Conforme |
 
 **Verdict face à l'exigence** « moins de 200 ms jusqu'à 800 requêtes par
-seconde, par instance » : **non satisfaite** sur cet environnement. Une instance
-d'API limitée à 2 CPU et 1 Gio, avec PostgreSQL limité à 2 CPU, tient
-largement le seuil à 80 req/s (p99 inférieur à 10 ms) et à 400 réservations/s
-(p99 de 15 ms). À 800 réservations/s, le serveur n'en valide qu'environ 410
-par seconde : la file d'attente s'allonge et les requêtes dépassent le délai
-client de 2 s. Avec 400 réservations et 400 refus par seconde, la latence
-reste très basse, sauf pendant environ sept secondes en fin de pic, ce qui
-suffit à porter le p99 du pic à 1 s.
+seconde, par instance » :
 
-L'outbox (verdict b) ne suit pas un débit soutenu de 400 réservations/s : elle
-publie environ 140 à 215 événements/s, et son retard atteint plusieurs
+- **Configuration de référence (PostgreSQL à 2 CPU) : non satisfaite.** Le
+  seuil est largement tenu à 80 req/s (p99 inférieur à 10 ms) et à
+  400 réservations/s (p99 de 15 ms). À 800 réservations/s, PostgreSQL sature
+  et le serveur n'en valide qu'environ 410 par seconde : la file d'attente
+  s'allonge et les requêtes dépassent le délai client de 2 s. Avec
+  400 réservations et 400 refus par seconde, la latence reste très basse,
+  sauf pendant environ sept secondes en fin de pic, ce qui suffit à porter
+  le p99 du pic à 1 s.
+- **Base non limitante (PostgreSQL à 4 CPU) : satisfaite pour l'instance
+  d'API.** La même instance d'API, toujours limitée à 2 CPU et 1 Gio, tient
+  800 req/s pendant cinq minutes dans les deux scénarios, avec un p99 du pic
+  de 29,5 ms (réservations réussies) et de 8,6 ms (mixte), sans erreur ni
+  itération abandonnée. Elle utilise alors en moyenne 63 % de ses 200 % de
+  CPU au pic. La limite constatée en référence vient donc de la base, pas de
+  l'instance d'API. Ce résultat repose sur une exécution par scénario.
+
+L'outbox (verdict b) ne suit pas un débit soutenu de 400 réservations/s, même
+quand la base dispose de 4 CPU : elle
+publie environ 140 à 240 événements/s, et son retard atteint plusieurs
 minutes sans se résorber pendant les cinq minutes de récupération. Aucune
 incohérence de données n'a été détectée : pas de surréservation, une demande
 et un événement par réservation, même sous saturation.
@@ -34,8 +50,8 @@ et un événement par réservation, même sous saturation.
 
 | Élément | Valeur |
 | --- | --- |
-| Commit mesuré | `298a151ef81d140e9d6881515b2573493cccdc7e`, arbre propre (`working_tree_clean: true` dans chaque `verdict.json`) |
-| Code de l'API | Identique à `master` `576edf0` (la branche ne modifie ni `src/`, ni `pom.xml`, ni `Dockerfile`), version `0.1.0-SNAPSHOT` |
+| Commit mesuré | `298a151ef81d140e9d6881515b2573493cccdc7e` (configuration de référence) et `9ce17f288b55c911b8c214ccea3f70e0ffba6554` (campagne complémentaire), arbre propre (`working_tree_clean: true` dans chaque `verdict.json`) |
+| Code de l'API | Identique à `master` `576edf0` pour les deux commits (la branche ne modifie ni `src/`, ni `pom.xml`, ni `Dockerfile`), version `0.1.0-SNAPSHOT` |
 | Hôte | Apple M4, 10 cœurs, 16 Gio de RAM, macOS 15.8.1, sur secteur |
 | Docker | Docker Desktop, moteur 28.1.1, Compose 2.35.1 ; VM : 10 CPU, 15,6 Gio |
 | Générateur | k6 v1.2.1 (go1.24.6, darwin/arm64), sur l'hôte, sans limite |
@@ -88,7 +104,7 @@ Sur une centaine de requêtes, le p99 correspond aux deux requêtes les plus
 lentes, qui suivent la réinitialisation des données. Il est indicatif et
 n'entre pas dans le verdict.
 
-## (a) Latence de l'API
+## (a) Latence de l'API (référence, PostgreSQL à 2 CPU)
 
 ### Réservations réussies, pic à 800 req/s
 
@@ -175,7 +191,7 @@ si la limite vient du CPU ou de la sérialisation des validations. En mode
 mixte, les refus ne coûtent qu'une recherche, ce qui explique la charge
 moindre.
 
-## (b) Santé de l'outbox
+## (b) Santé de l'outbox (référence, PostgreSQL à 2 CPU)
 
 Retard de publication = `published_at - occurred_at`, par phase
 d'occurrence de l'événement. « En attente » et « plus ancien » viennent des
@@ -234,6 +250,98 @@ cher à mesure que le stream grandit. Elle reste à confirmer. En production,
 un consommateur arrêté aurait le même effet, jusqu'à la limite mémoire de
 Redis (256 Mo).
 
+## Campagne complémentaire : PostgreSQL à 4 CPU
+
+**Objectif.** L'exigence porte sur une instance de service, l'API. En
+configuration de référence, c'est PostgreSQL, limité à 2 CPU, qui sature.
+Cette campagne vérifie si l'instance d'API, toujours limitée à 2 CPU et
+1 Gio, tient le seuil à 800 req/s quand la base n'est plus le facteur
+limitant.
+
+**Seul changement** : `PERF_DATABASE_CPUS=4`, qui porte la limite CPU de
+`database` à 4 (la valeur par défaut reste 2). Tout le reste est identique à
+la référence : API à 2 CPU et 1 Gio (tas 75 %), Redis à 1 CPU, profil, données,
+générateur, code de l'application. Commit mesuré `9ce17f2`, arbre propre,
+`down -v` avant chaque campagne. Exécution : réservations réussies à 15:59
+UTC, mixte à 16:59 UTC. Aucun autre conteneur détecté. Les deux
+`verdict.json` enregistrent `database.cpus = 4.0` et `api.cpus = 2.0`.
+
+Sur ce commit, les compteurs `pending_at_end`, `outbox.events` et
+`outbox.published` sont relevés au même instant, juste après k6.
+
+### (a) Latence de l'API : réussi dans les deux scénarios
+
+Réservations réussies, pic à 800 req/s :
+
+| Phase | Débit cible | Requêtes | Débit réel | p50 | p95 | p99 | max | Erreurs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Nominal | 80 req/s | 24 001 | 80,0 req/s | 3,4 ms | 4,7 ms | 6,6 ms | 46,6 ms | 0,00 % |
+| Pic | 800 req/s | 240 001 | 800,0 req/s | 3,1 ms | 10,0 ms | 29,5 ms | 420,7 ms | 0,00 % |
+| Récupération | 80 req/s | 24 000 | 80,0 req/s | 3,0 ms | 4,6 ms | 7,4 ms | 130,8 ms | 0,00 % |
+
+Aucune itération abandonnée (440 utilisateurs virtuels au plus), toutes les
+vérifications conformes, 292 802 réservations en base pour 292 802 réponses
+`201`.
+
+Mixte, pic à 800 req/s :
+
+| Phase | Débit cible | Requêtes | Débit réel | p50 | p95 | p99 | max | Erreurs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Nominal | 80 req/s | 24 002 | 80,0 req/s | 3,7 ms | 6,8 ms | 8,4 ms | 49,6 ms | 0,00 % |
+| Pic | 800 req/s | 240 001 | 800,0 req/s | 2,4 ms | 4,3 ms | 8,6 ms | 222,3 ms | 0,00 % |
+| Récupération | 80 req/s | 24 002 | 80,0 req/s | 2,9 ms | 4,7 ms | 7,7 ms | 101,2 ms | 0,00 % |
+
+| Phase | Flux | p50 | p95 | p99 | max |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Pic | Réservations (`201`) | 2,6 ms | 5,0 ms | 10,9 ms | 222,3 ms |
+| Pic | Refus (`404`) | 1,0 ms | 2,5 ms | 5,7 ms | 210,2 ms |
+| Récupération | Réservations (`201`) | 3,2 ms | 5,2 ms | 9,3 ms | 101,2 ms |
+| Récupération | Refus (`404`) | 1,5 ms | 3,0 ms | 5,3 ms | 62,2 ms |
+
+Aucune itération abandonnée, 146 403 réservations en base pour
+146 403 réponses `201`. Le blocage d'environ sept secondes observé en fin de
+pic dans la configuration de référence ne se reproduit pas ici : la latence
+maximale du pic est de 222 ms.
+
+### Ressources pendant le pic
+
+| Campagne | API (limite 200 %) | PostgreSQL (limite 400 %) | Redis (limite 100 %) | k6 (hôte) |
+| --- | --- | --- | --- | --- |
+| Réussies 800 req/s | 63 % (max 112 %), 553 Mio | 182 % (max 308 %), 329 Mio | 74 % (max 81 %), 87 Mio | 26 % (max 49 %), 215 Mio |
+| Mixte 800 req/s | 45 % (max 66 %), 478 Mio | 98 % (max 115 %), 234 Mio | 77 % (max 86 %), 51 Mio | 25 % (max 46 %), 236 Mio |
+
+Avec 4 CPU, PostgreSQL consomme en moyenne 182 % au pic des réservations
+réussies, avec des pointes à 308 % : il dépasse donc régulièrement les 2 CPU
+de la configuration de référence. L'API garde une marge (63 % sur 200 %).
+
+### (b) Santé de l'outbox : échec dans les deux scénarios
+
+| Campagne | Phase | Événements | En attente max | Plus ancien max | Retard p50 | Retard p95 | Retard p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Réussies 800 | Nominal | 24 001 | 71 | 0,9 s | 4,4 ms | 157,1 ms | 850,1 ms |
+| Réussies 800 | Pic | 239 882 | 180 636 | 225,8 s | 516,0 s | 2 494,6 s | 2 790,4 s |
+| Réussies 800 | Récupération | 24 133 | 180 359 | 468,6 s | — | — | — |
+| Mixte 800 | Nominal | 12 001 | 1 | 0,0 s | 4,6 ms | 6,3 ms | 7,6 ms |
+| Mixte 800 | Pic | 119 938 | 46 706 | 116,8 s | 69,3 s | 305,5 s | 334,4 s |
+| Mixte 800 | Récupération | 12 072 | 46 779 | 310,5 s | 256,5 s | 335,8 s | 342,8 s |
+
+| Campagne | Publiés / événements juste après k6 | En attente à la fin de la récupération | Verdict (b) |
+| --- | ---: | ---: | --- |
+| Réussies 800 | 132 972 / 292 802 | 159 830 | Échec |
+| Mixte 800 | 129 519 / 146 403 | 16 884 | Échec |
+
+Le publieur atteint 196 événements/s au pic des réservations réussies et
+242/s au pic du scénario mixte, puis 141 à 150/s pendant la récupération.
+L'envoi `XADD` occupe toujours l'essentiel de chaque publication : 4,4 ms en
+moyenne au pic des réservations réussies, 6,2 ms pendant la récupération. Les
+4 CPU de PostgreSQL ne changent donc pas le débit du publieur, ce qui
+conforte l'hypothèse d'une limite côté Redis (stream non réduit, rétention
+`ACKED` sans consommateur). Dans les réservations réussies, aucun événement
+de la récupération n'était encore publié quand le retard a été calculé, après
+les contrôles SQL : 43 253 événements restaient alors en attente. Ces
+contrôles ont duré environ 40 minutes, car le publieur continuait de vider
+la file en parallèle.
+
 ## Cohérence des données
 
 | Campagne | Réservations en base | Réponses `201` reçues | Cohérence interne |
@@ -241,6 +349,8 @@ Redis (256 Mo).
 | Réussies 800 | 186 223 | 62 110 | Conforme |
 | Mixte 800 | 146 004 | 145 760 | Conforme |
 | Réussies 400 | 172 802 | 172 802 | Conforme |
+| Réussies 800, PostgreSQL 4 CPU | 292 802 | 292 802 | Conforme |
+| Mixte 800, PostgreSQL 4 CPU | 146 403 | 146 403 | Conforme |
 
 Aucun lit négatif, aucune surréservation, une demande enregistrée et un
 événement `BedReserved` conforme par réservation, y compris sous saturation.
@@ -283,9 +393,10 @@ en créer une seconde.
 
 Ces pistes sortent du périmètre de ce lot, qui mesure la version actuelle :
 
-1. Identifier la limite à 800 réservations/s : campagne avec plus de CPU
-   pour PostgreSQL, puis analyse des attentes (`pg_stat_activity`,
-   `pg_stat_statements`) et réglage du pool HikariCP.
+1. Dimensionner la base pour 800 réservations/s : la campagne à 4 CPU montre
+   que l'API tient la charge quand PostgreSQL dispose de plus de 2 CPU ; une
+   analyse des attentes (`pg_stat_activity`, `pg_stat_statements`) préciserait
+   le besoin réel.
 2. Expliquer le blocage d'environ sept secondes en fin de pic du scénario
    mixte.
 3. Revoir la rétention du stream : politique `ACKED` sans consommateur,
@@ -307,6 +418,8 @@ ressources) de chaque exécution sont dans
 | `reussies-pic-800/` | Réservations réussies, pic à 800 req/s |
 | `mixte-pic-800/` | Mixte, pic à 800 req/s |
 | `reussies-pic-400/` | Réservations réussies, pic à 400 req/s |
+| `postgres-4cpu-reussies-pic-800/` | Complémentaire, PostgreSQL à 4 CPU : réservations réussies, pic à 800 req/s |
+| `postgres-4cpu-mixte-pic-800/` | Complémentaire, PostgreSQL à 4 CPU : mixte, pic à 800 req/s |
 
 Les journaux et CSV complets (`k6.txt`, `outbox.csv`, `outbox-metrics.csv`,
 `resources.csv`) sont volumineux et restent hors du dépôt.
