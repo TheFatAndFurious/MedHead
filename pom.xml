@@ -123,6 +123,16 @@
 					</execution>
 				</executions>
 			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<!-- ActuatorInfoTest compares /actuator/info with the version being built. -->
+						<medhead.expected-version>${project.version}</medhead.expected-version>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
 			<!-- Writes git.properties (commit, branch), exposed by /actuator/info. The version and
 				 the base configuration come from spring-boot-starter-parent. -->
 			<plugin>
