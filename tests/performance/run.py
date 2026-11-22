@@ -239,8 +239,12 @@ def main():
             actuator_errors.append(f'{utc_now()} {error}')
         except (ValueError, KeyError) as error:
             monitor_errors.append(str(error))
-        pending = int(sql('SELECT count(*) FROM event_outbox WHERE published_at IS NULL;',
-                          '-t', '-A').strip())
+        # One snapshot for verdict (b): the publisher keeps draining during the slow SQL checks.
+        reservations, events, published = (int(value) for value in sql(
+            'SELECT (SELECT count(*) FROM bed_reservation), (SELECT count(*) FROM event_outbox), '
+            '(SELECT count(*) FROM event_outbox WHERE published_at IS NOT NULL);',
+            '-t', '-A', '-F', ' ').split())
+        pending = events - published
         # Failed requests each log a warning: print the summary, not hundreds of thousands of lines.
         k6_lines = (output / 'k6.txt').read_text().splitlines()
         warnings = [line for line in k6_lines if 'level=warning' in line]
@@ -259,10 +263,6 @@ def main():
         # A request that timed out on the client may still have been committed by the API.
         matches_http = 'PASS: database reservations match' in consistency
 
-        reservations, events, published = (int(value) for value in sql(
-            'SELECT (SELECT count(*) FROM bed_reservation), (SELECT count(*) FROM event_outbox), '
-            '(SELECT count(*) FROM event_outbox WHERE published_at IS NOT NULL);',
-            '-t', '-A', '-F', ' ').split())
         with (output / 'outbox.csv').open() as log:
             samples = [{'epoch': float(row['epoch']), 'pending': int(row['pending']),
                         'oldest': float(row['oldest_pending_seconds'])} for row in csv.DictReader(log)]
