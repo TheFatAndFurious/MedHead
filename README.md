@@ -1,5 +1,22 @@
 # MedHead
 
+## Prérequis
+
+| Outil | Version | Utilisé pour |
+| --- | --- | --- |
+| Docker avec le plugin Compose | Compose 2.24.4 ou plus | Démonstration, tests d'intégration, E2E et de charge, images |
+| JDK | 21 (version de la CI) | Tests et JAR de l'API ; le Maven Wrapper `./mvnw` installe Maven |
+| Node.js et npm | Node 24 | Tests E2E Playwright (les vérifications du front tournent aussi dans Docker) |
+| Python 3 et k6 | — | Tests de charge ([guide](tests/performance/README.md)) |
+
+La démonstration utilise les ports `5432`, `8080`, `5173` et `8180`, et les
+tests d'intégration les ports `55432` et `56379`.
+
+Le Compose de démonstration porte le nom de projet `medhead`. Sur une machine où
+cette stack a déjà tourné, `docker compose up` réutilise ses volumes (données,
+realm Keycloak). Pour repartir de zéro, lancer d'abord `docker compose down -v`,
+qui supprime ces données, ou définir un autre `COMPOSE_PROJECT_NAME`.
+
 ## Démarrage avec Docker
 
 Créer le fichier de configuration locale :
@@ -551,6 +568,30 @@ unset COMPOSE_PROJECT_NAME
 
 `npm test` ne lance pas ces tests : il se limite aux tests unitaires de
 `frontend/tests/`.
+
+### Tests du front-end
+
+Les tests unitaires (`node:test`) et la vérification des types tournent dans
+l'image de développement du front, sans Node sur la machine hôte (détails dans
+le [guide du front-end](frontend/README.md#vérifications)) :
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml run --build --rm --no-deps frontend npm test
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml run --build --rm --no-deps frontend npm run check
+```
+
+### Construire les artefacts
+
+| Artefact | Commande | Résultat |
+| --- | --- | --- |
+| JAR de l'API | `./mvnw -DskipTests clean package` | `target/medhead-0.1.0-SNAPSHOT.jar` |
+| JAR testé, comme en CI | `clean verify` avec les tests d'intégration (voir [Reproduire les étapes principales en local](#reproduire-les-étapes-principales-en-local)) | Même JAR, après les tests unitaires, d'intégration et d'acceptation |
+| Image de l'API | `docker build --tag medhead:ci .` | Image locale `medhead:ci` |
+| Image du front-end | `docker compose build frontend` | Image locale `medhead-frontend:runtime` |
+
+Le Dockerfile de l'API recompile le code : l'image ne dépend pas d'un JAR
+construit au préalable. Les artefacts versionnés (images GHCR et JAR des
+releases) sont produits par la CI, décrite ci-dessous.
 
 ## Intégration continue
 
