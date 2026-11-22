@@ -683,9 +683,10 @@ Seul ce job dispose de la permission `contents: write`.
 
 #### Retrouver le commit d'un artefact
 
-Chaque JAR contient `git.properties` (commit, branche) et
-`META-INF/build-info.properties` (version). L'API les expose sans
-authentification, en lecture seule, sur `/actuator/info` :
+Chaque JAR construit depuis un clone Git contient `git.properties` (commit,
+branche) et `META-INF/build-info.properties` (version). L'API les expose sans
+authentification, en lecture seule, sur `/actuator/info`. Pour un JAR lancé
+hors Docker (`java -jar target/medhead-0.1.0-SNAPSHOT.jar`) :
 
 ```bash
 curl -s http://localhost:8080/actuator/info
@@ -696,10 +697,17 @@ curl -s http://localhost:8080/actuator/info
  "build":{"artifact":"medhead","name":"MedHead","time":"…","version":"0.1.0-SNAPSHOT","group":"com.example"}}
 ```
 
+Dans la stack Docker, la même commande renvoie `"git":{}` et seulement la
+partie `build` (voir ci-dessous) : le commit d'une image se lit dans ses labels.
+
 Les images portent les labels OCI `org.opencontainers.image.revision` (SHA
-complet), `.version`, `.created` et `.source` :
+complet), `.version`, `.created` et `.source`. Elles sont publiées pour
+`linux/amd64` uniquement : sur un Mac à processeur Apple, préciser la
+plateforme au téléchargement, sinon Docker répond `no matching manifest for
+linux/arm64/v8`.
 
 ```bash
+docker pull --platform linux/amd64 ghcr.io/thefatandfurious/medhead-api:master
 docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
   ghcr.io/thefatandfurious/medhead-api:master
 ```
