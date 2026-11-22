@@ -1,0 +1,158 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-ci:
+    name: frontend-ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install, test and build the front-end
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run check
+          npm run build
+      - name: Build the front-end Docker images
+        run: |
+          docker build --target runtime --tag medhead-frontend:ci frontend
+          docker build --target dev --tag medhead-frontend:ci-dev frontend
+
+  backend-ci:
+    name: backend-ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      COMPOSE_PROJECT_NAME: medhead-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the repository
+        id: checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21 and the Maven cache
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            pom.xml
+            .mvn/wrapper/maven-wrapper.properties
+
+      - name: Start PostGIS TLS and Redis TLS
+        run: docker compose -f docker-compose.test.yaml up --build -d --wait --wait-timeout 120
+
+      - name: Copy the PostgreSQL and Redis CA certificates
+        run: |
+          mkdir -p .local/postgres-tests .local/redis-tests
+          docker compose -f docker-compose.test.yaml cp \
+            database:/tls/ca.crt .local/postgres-tests/ca.crt
+          docker compose -f docker-compose.test.yaml cp \
+            redis:/tls/ca.crt .local/redis-tests/ca.crt
+
+      - name: Run all tests and package the application
+        id: maven
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress \
+            -Dmedhead.integration-tests=true \
+            -Dmedhead.redis-integration-tests=true \
+            clean verify
+
+      - name: Verify that all integration suites ran
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          reports = Path("target/surefire-reports")
+          required_suites = (
+              "com.example.medhead.DatabaseTlsIntegrationTest",
+              "com.example.medhead.hospital.api.HospitalCatalogIntegrationTest",
+              "com.example.medhead.hospital.application.BedReservationIntegrationTest",
+              "com.example.medhead.outbox.OutboxPublicationIntegrationTest",
+          )
+          for name in required_suites:
+              report = reports / f"TEST-{name}.xml"
+              if not report.is_file():
+                  raise SystemExit(f"Missing integration test report: {report}")
+              suite = ET.parse(report).getroot()
+              tests = int(suite.get("tests", "0"))
+              skipped = int(suite.get("skipped", "0"))
+              failures = int(suite.get("failures", "0"))
+              errors = int(suite.get("errors", "0"))
+              if tests <= 0 or skipped or failures or errors:
+                  raise SystemExit(
+                      f"Integration suite {name}: tests={tests}, skipped={skipped}, "
+                      f"failures={failures}, errors={errors}; expected successful, "
+                      "non-skipped tests"
+                  )
+              print(f"{name}: {tests} tests passed, none skipped")
+          PY
+
+      - name: Build the Docker image
+        run: docker build --tag medhead:ci .
+
+      - name: Upload test reports
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-reports
+          path: target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload the application JAR
+        if: ${{ always() && steps.maven.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-jar
+          path: target/*.jar
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect Docker diagnostics on failure
+        if: ${{ failure() && steps.checkout.outcome == 'success' }}
+        run: |
+          mkdir -p .local/ci-diagnostics
+          docker compose -f docker-compose.test.yaml ps --all \
+            > .local/ci-diagnostics/compose-ps.txt 2>&1 || true
+          docker compose -f docker-compose.test.yaml logs --no-color \
+            > .local/ci-diagnostics/compose-logs.txt 2>&1 || true
+
+      - name: Upload Docker diagnostics
+        if: ${{ failure() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-docker-diagnostics
+          path: .local/ci-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop the test environment
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        run: docker compose -f docker-compose.test.yaml down --volumes --remove-orphans
