@@ -133,10 +133,19 @@ phase, le nombre maximal d'événements en attente, l'âge du plus ancien, les
 percentiles du retard de publication (`published_at - occurred_at`) et le
 temps de résorption après le pic, sans les juger.
 
-La cohérence des données (lits, réservations, événements) est contrôlée à
-part par `verify.sql`. Une sortie non nulle indique un verdict (a) ou (b) en
-échec, une incohérence, un seuil k6 dépassé ou un échec de collecte. Pour un
-smoke, seuls la cohérence, la collecte et les seuils k6 comptent.
+La cohérence des données est contrôlée à part par `verify.sql`, en deux temps :
+
+- **cohérence interne**, toujours exigée : aucun lit négatif ni surréservation,
+  lits consommés = réservations, une demande enregistrée et un événement
+  `BedReserved` par réservation, payloads conformes ;
+- **rapprochement avec les réponses `201`** reçues par k6, rapporté sans
+  bloquer : une requête abandonnée par le client après 2 s peut avoir été
+  validée par l'API, ce qui crée un écart sans corruption. Un tel écart
+  s'accompagne d'erreurs et fait donc déjà échouer le verdict (a).
+
+Une sortie non nulle indique un verdict (a) ou (b) en échec, une incohérence
+interne, un seuil k6 dépassé ou un échec de collecte. Pour un smoke, seuls la
+cohérence, la collecte et les seuils k6 comptent.
 
 Le dispatcher est réveillé par PostgreSQL avec `LISTEN / NOTIFY` et enchaîne
 les lots sans délai tant qu'il reste des événements disponibles. La taille
@@ -151,8 +160,9 @@ Les résultats bruts sont conservés dans `.local/performance/<date>-<mode>/`
 - `verdict.json` : environnement (hôte, Docker, limites des conteneurs,
   versions, commit, état du dépôt), profil, verdicts (a) et (b) avec les
   tableaux par phase, cohérence et synthèse des ressources par phase.
-- `consistency.txt` : rapprochement des réponses `201`, lits consommés,
-  réservations et événements ; vérification des identifiants et payloads.
+- `consistency.txt` : cohérence interne (lits consommés, réservations,
+  demandes et événements, identifiants et payloads) et rapprochement avec
+  les réponses `201`.
 - `outbox.csv` : nombre et âge des événements en attente, toutes les cinq secondes.
 - `outbox-metrics.csv` : durées des lots et des étapes, résultats et débits
   mesurés via Actuator, avec une référence avant la charge et un dernier
@@ -233,8 +243,10 @@ frontières d'un événement ou d'une phase : raisonner sur plusieurs intervalle
 Ces mesures ne fournissent pas de p95 par étape.
 
 Les relevés Actuator utilisent des requêtes HTTP supplémentaires, hors du
-trafic métier mesuré par k6. Une erreur de collecte est conservée dans le
-verdict et rend la campagne non valide.
+trafic métier mesuré par k6. Une API surchargée peut ne pas y répondre dans
+les 2 s : ces échecs sont comptés dans `verdict.json` (`actuator_errors`) et
+le relevé de l'outbox continue. Un relevé SQL en échec ou une remise à zéro
+des compteurs (redémarrage de l'API) rend en revanche la campagne non valide.
 
 Pour diagnostiquer les ressources et les erreurs pendant une campagne :
 
