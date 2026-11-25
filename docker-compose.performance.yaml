@@ -35,6 +35,25 @@ services:
       POSTGRES_USER: hospital_perf
       POSTGRES_PASSWORD: hospital_perf
     ports: !override []
+    # Same settings as the image, plus the WAL write and fsync timings (pg_stat_wal) read by
+    # tests/performance/io_usage.py. PERF_SYNCHRONOUS_COMMIT=off is a diagnostic variant only:
+    # commits no longer wait for the WAL flush, and a crash loses the last confirmed ones.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - track_wal_io_timing=on
+      - -c
+      - synchronous_commit=${PERF_SYNCHRONOUS_COMMIT:-on}
     # Reference: 2 CPUs. PERF_DATABASE_CPUS raises it to check whether the API itself holds
     # the load once the database is no longer the bottleneck.
     cpus: ${PERF_DATABASE_CPUS:-2}
@@ -56,6 +75,9 @@ services:
       service: redis
     environment:
       REDIS_PASSWORD: medhead_perf
+    # PERF_REDIS_APPENDFSYNC=everysec is a diagnostic variant only: a Redis crash can lose
+    # about one second of events already marked published in the outbox.
+    command: ["--appendfsync", "${PERF_REDIS_APPENDFSYNC:-always}"]
     cpus: 1
     mem_limit: 512m
 
