@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface HospitalRepository extends JpaRepository<Hospital, Long> {
@@ -34,6 +35,16 @@ public interface HospitalRepository extends JpaRepository<Hospital, Long> {
 			@Param("longitude") double longitude,
 			@Param("specialtyCode") String specialtyCode
 	);
+
+	@Query("""
+			select hospital
+			from HospitalSpecialty membership
+			join membership.hospital hospital
+			where membership.specialty.code = :specialtyCode
+			  and hospital.availableBeds > 0
+			order by hospital.id
+			""")
+	List<Hospital> findAvailableBySpecialty(@Param("specialtyCode") String specialtyCode);
 
 	@Transactional
 	@Modifying(clearAutomatically = true, flushAutomatically = true)

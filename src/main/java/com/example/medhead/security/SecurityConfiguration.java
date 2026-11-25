@@ -62,7 +62,8 @@ public class SecurityConfiguration {
 						.requestMatchers(HttpMethod.GET, "/actuator/info").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/hospitals", "/api/v1/specialties")
 						.hasAnyRole("LECTEUR", "REGULATEUR")
-						.requestMatchers(HttpMethod.POST, "/api/v1/hospitals/reservations").hasRole("REGULATEUR")
+						.requestMatchers(HttpMethod.POST, "/api/v1/hospitals/reservations",
+								"/api/v1/hospitals/reservations/by-road").hasRole("REGULATEUR")
 						.requestMatchers(HttpMethod.GET, "/actuator/metrics", "/actuator/metrics/**")
 						.hasRole("REGULATEUR")
 						.anyRequest().denyAll())

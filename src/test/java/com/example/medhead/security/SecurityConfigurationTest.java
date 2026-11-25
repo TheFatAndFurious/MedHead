@@ -54,6 +54,7 @@ class SecurityConfigurationTest {
 		mvc.perform(get("/api/v1/hospitals").cookie(new Cookie("medhead_session", "forged")))
 				.andExpect(status().isUnauthorized());
 		mvc.perform(post("/api/v1/hospitals/reservations")).andExpect(status().isUnauthorized());
+		mvc.perform(post("/api/v1/hospitals/reservations/by-road")).andExpect(status().isUnauthorized());
 		assertThat(endpoints.reservations).isZero();
 	}
 
@@ -64,15 +65,20 @@ class SecurityConfigurationTest {
 		mvc.perform(get("/api/v1/specialties").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
 		mvc.perform(post("/api/v1/hospitals/reservations").header("Authorization", "Bearer " + token))
 				.andExpect(status().isForbidden());
+		mvc.perform(post("/api/v1/hospitals/reservations/by-road").header("Authorization", "Bearer " + token))
+				.andExpect(status().isForbidden());
 		assertThat(endpoints.reservations).isZero();
 	}
 
 	@Test
 	void regulatorCanReserveWithBearerAuthenticationWithoutASessionOrCsrfCookie() throws Exception {
-		mvc.perform(post("/api/v1/hospitals/reservations").header("Authorization", "Bearer " +
-				token(ISSUER, "medhead-api", List.of("REGULATEUR"), Instant.now().plusSeconds(300), KEY)))
+		String authorization = "Bearer " +
+				token(ISSUER, "medhead-api", List.of("REGULATEUR"), Instant.now().plusSeconds(300), KEY);
+		mvc.perform(post("/api/v1/hospitals/reservations").header("Authorization", authorization))
 				.andExpect(status().isCreated()).andExpect(header().doesNotExist("Set-Cookie"));
-		assertThat(endpoints.reservations).isEqualTo(1);
+		mvc.perform(post("/api/v1/hospitals/reservations/by-road").header("Authorization", authorization))
+				.andExpect(status().isCreated()).andExpect(header().doesNotExist("Set-Cookie"));
+		assertThat(endpoints.reservations).isEqualTo(2);
 	}
 
 	@Test
@@ -175,7 +181,7 @@ class SecurityConfigurationTest {
 		@GetMapping("/error")
 		@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
 		String failure() { return "error"; }
-		@PostMapping("/api/v1/hospitals/reservations")
+		@PostMapping({"/api/v1/hospitals/reservations", "/api/v1/hospitals/reservations/by-road"})
 		@ResponseStatus(HttpStatus.CREATED)
 		String reserve() { reservations++; return "created"; }
 	}

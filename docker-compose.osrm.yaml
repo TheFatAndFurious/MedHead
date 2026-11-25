@@ -1,0 +1,13 @@
+services:
+  api:
+    environment:
+      MEDHEAD_OSRM_URL: http://osrm:5000
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend@sha256:e1929ae2818226284d7ef007329098a30851c11528ab3712bc9c8d68da78278b
+    command: ["osrm-routed", "--algorithm", "ch", "/data/london.osrm"]
+    volumes:
+      - ./.local/osrm:/data:ro
+    restart: unless-stopped
+    networks:
+      - backend

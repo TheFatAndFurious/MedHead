@@ -2,6 +2,8 @@ package com.example.medhead.hospital.api;
 
 import com.example.medhead.hospital.application.IdempotencyKeyReusedException;
 import com.example.medhead.hospital.application.NoAvailableHospitalException;
+import com.example.medhead.hospital.application.NoRoadRouteException;
+import com.example.medhead.hospital.application.RoadRoutingUnavailableException;
 import com.example.medhead.hospital.application.UnknownSpecialtyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -109,6 +111,26 @@ public class ApiExceptionHandler {
 		);
 		problem.setProperty("specialtyCode", exception.getSpecialtyCode());
 		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+	}
+
+	@ExceptionHandler(NoRoadRouteException.class)
+	public ResponseEntity<ProblemDetail> handleNoRoadRoute() {
+		return ResponseEntity.unprocessableContent().body(problem(
+				HttpStatus.UNPROCESSABLE_CONTENT,
+				"No road route",
+				"No road route could be calculated to an eligible hospital",
+				"urn:problem:no-road-route"
+		));
+	}
+
+	@ExceptionHandler(RoadRoutingUnavailableException.class)
+	public ResponseEntity<ProblemDetail> handleRoadRoutingUnavailable() {
+		return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem(
+				HttpStatus.SERVICE_UNAVAILABLE,
+				"Road routing unavailable",
+				"The routing service could not calculate travel times",
+				"urn:problem:road-routing-unavailable"
+		));
 	}
 
 	private static ProblemDetail problem(

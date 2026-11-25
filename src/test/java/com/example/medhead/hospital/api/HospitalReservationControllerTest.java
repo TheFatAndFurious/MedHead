@@ -151,7 +151,7 @@ class HospitalReservationControllerTest {
 		return new ReservedBed(
 				reservationId, Instant.parse("2026-10-14T08:00:00Z"),
 				1L, "DEMO-LON-001", "MedHead Westminster", 51.5072, -0.1276,
-				350, 16, 42.5, command.specialtyCode()
+				350, 16, 42.5, command.specialtyCode(), null
 		);
 	}
 
@@ -164,7 +164,7 @@ class HospitalReservationControllerTest {
 		private ReserveBedCommand command;
 
 		private StubReservationService() {
-			super(null, null, null, null, null, null);
+			super(null, null, null, null, null, null, null, null);
 		}
 
 		@Override
