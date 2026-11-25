@@ -94,6 +94,14 @@ PERF_REDIS_APPENDFSYNC=everysec python3 tests/performance/run.py success --peak-
 La valeur effective figure dans le `compose.yaml` copié dans le dossier de
 résultats.
 
+Les campagnes du 25 novembre 2026 ont utilisé ces variantes pour expliquer la
+dégradation de la latence de l'API au pic à 400 req/s : les synchronisations
+AOF de Redis ralentissent celles du journal PostgreSQL sur le disque partagé,
+et le verrou que PostgreSQL prend au `COMMIT` d'une transaction qui émet un
+`NOTIFY` fait alors attendre les réservations. Avec les deux variantes, le
+p99 du pic passe de 854 à 16 ms. Détails :
+[résultats du 25 novembre](../../docs/performance/resultats-2026-11-25.md).
+
 `verdict.json` enregistre les limites effectives de chaque conteneur.
 Les autres réglages de l'API restent ceux par défaut (Tomcat, pool HikariCP
 de 10 connexions, lots outbox de 100 événements). k6 tourne sur l'hôte, sans

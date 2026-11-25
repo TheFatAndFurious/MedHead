@@ -6,6 +6,9 @@ par `LISTEN / NOTIFY`. Elles remplacent les campagnes du 28 octobre, antérieure
 à ces évolutions. Méthode et critères : [stratégie](strategie-tests-charge.md) ;
 commandes : [guide d'exécution](../../tests/performance/README.md).
 
+Les améliorations de l'outbox qui ont suivi sont mesurées dans les
+[résultats du 25 novembre](resultats-2026-11-25.md).
+
 ## Synthèse
 
 Dans toutes les campagnes, l'API est limitée à 2 CPU et 1 Gio. Seule la
