@@ -115,7 +115,7 @@ class OutboxPublicationIntegrationTest {
 				"select id from event_outbox where aggregate_id = ?", UUID.class, reservation.reservationId()
 		);
 
-		assertThat(publicationService.publishNext()).isTrue();
+		assertThat(publicationService.publishBatch(10)).isEqualTo(1);
 
 		assertThat(pendingCount()).isZero();
 		assertThat(records()).singleElement().satisfies(record -> {
@@ -128,54 +128,77 @@ class OutboxPublicationIntegrationTest {
 		});
 		assertThat(redis.opsForStream().groups(STREAM)).extracting(group -> group.groupName())
 				.containsExactlyInAnyOrder("outbox-consumers", "outbox-audit");
-		assertThat(publicationService.publishNext()).isFalse();
+		assertThat(publicationService.publishBatch(10)).isZero();
 		assertThat(records()).hasSize(1);
 	}
 
 	@Test
-	void recordsDatabaseAndRedisStepsAndSeparatesEmptyPolls() {
-		double createdGroups = registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count();
-		double existingGroups = registry.get("outbox.redis.group.duration").tag("outcome", "existing").timer().count();
-		double sent = registry.get("outbox.redis.add.duration").tag("outcome", "success").timer().count();
-		double found = registry.get("outbox.select.duration").tag("outcome", "found").timer().count();
-		double published = registry.get("outbox.event.duration").tag("outcome", "published").timer().count();
-		double empty = registry.get("outbox.event.duration").tag("outcome", "empty").timer().count();
+	void recordsOneSelectPipelineAndUpdatePerBatch() {
+		double createdGroups = count("outbox.redis.group.duration", "created");
+		double existingGroups = count("outbox.redis.group.duration", "existing");
+		double sent = count("outbox.redis.add.duration", "success");
+		double found = count("outbox.select.duration", "found");
+		double emptySelects = count("outbox.select.duration", "empty");
+		double updated = count("outbox.update.duration", "success");
+		double partial = registry.get("outbox.batch.size").tag("outcome", "empty").summary().totalAmount();
 		insertEvent();
 		insertEvent();
 
-		new OutboxPublisher(publicationService, 3, metrics).publishPending();
+		assertThat(new OutboxPublisher(publicationService, 3, metrics).publishPending()).isEqualTo(OutboxPublisher.Result.EMPTY);
 
 		// The stream was deleted before the test: both groups are recreated once, never checked per event.
-		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count() - createdGroups).isEqualTo(2);
-		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "existing").timer().count() - existingGroups).isZero();
-		assertThat(registry.get("outbox.redis.add.duration").tag("outcome", "success").timer().count() - sent).isEqualTo(2);
-		assertThat(registry.get("outbox.select.duration").tag("outcome", "found").timer().count() - found).isEqualTo(2);
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "published").timer().count() - published).isEqualTo(2);
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count() - empty).isEqualTo(1);
+		assertThat(count("outbox.redis.group.duration", "created") - createdGroups).isEqualTo(2);
+		assertThat(count("outbox.redis.group.duration", "existing") - existingGroups).isZero();
+		assertThat(count("outbox.redis.add.duration", "success") - sent).isEqualTo(1);
+		assertThat(count("outbox.select.duration", "found") - found).isEqualTo(1);
+		assertThat(count("outbox.select.duration", "empty") - emptySelects).isZero();
+		assertThat(count("outbox.update.duration", "success") - updated).isEqualTo(1);
+		assertThat(registry.get("outbox.batch.size").tag("outcome", "empty").summary().totalAmount() - partial).isEqualTo(2);
 		assertThat(pendingCount()).isZero();
+		assertThat(records()).hasSize(2);
+	}
+
+	@Test
+	void keepsTheOutboxOrderWithinABatch() {
+		Instant first = Instant.parse("2026-01-01T00:00:00Z");
+		List<String> expected = new ArrayList<>();
+		for (int i = 0; i < 5; i++) {
+			expected.add(insertEvent(first.plusSeconds(i)).getId().toString());
+		}
+
+		assertThat(publicationService.publishBatch(10)).isEqualTo(5);
+
+		assertThat(records()).extracting(record -> record.getValue().get("eventId")).containsExactlyElementsOf(expected);
 	}
 
 	@Test
 	void createsConsumerGroupsOnceAndRecreatesThemWhenTheStreamDisappears() {
-		publisher.publish(testEvent());
+		publisher.publish(List.of(testEvent()));
 		double groupCalls = groupCalls();
-		double missing = registry.get("outbox.redis.add.duration").tag("outcome", "missing").timer().count();
+		double missing = count("outbox.redis.add.duration", "missing");
 
 		for (int i = 0; i < 5; i++) {
-			publisher.publish(testEvent());
+			publisher.publish(List.of(testEvent(), testEvent()));
 		}
 		assertThat(groupCalls() - groupCalls).isZero();
 
 		redis.delete(STREAM);
-		publisher.publish(testEvent());
+		List<OutboxEvent> batch = List.of(testEvent(), testEvent(), testEvent());
+		publisher.publish(batch);
 
-		assertThat(registry.get("outbox.redis.add.duration").tag("outcome", "missing").timer().count() - missing).isEqualTo(1);
-		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count()).isPositive();
+		// The whole pipeline is refused, then sent again once the stream and its groups exist.
+		assertThat(count("outbox.redis.add.duration", "missing") - missing).isEqualTo(1);
+		assertThat(count("outbox.redis.group.duration", "created")).isPositive();
 		assertThat(redis.opsForStream().groups(STREAM)).extracting(group -> group.groupName())
 				.containsExactlyInAnyOrder("outbox-consumers", "outbox-audit");
-		assertThat(records()).hasSize(1);
-		publisher.publish(testEvent());
+		assertThat(records()).extracting(record -> record.getValue().get("eventId"))
+				.containsExactlyElementsOf(batch.stream().map(event -> event.getId().toString()).toList());
+		publisher.publish(List.of(testEvent()));
 		assertThat(groupCalls() - groupCalls).isEqualTo(2);
+	}
+
+	private double count(String timer, String outcome) {
+		return registry.get(timer).tag("outcome", outcome).timer().count();
 	}
 
 	private double groupCalls() {
@@ -211,13 +234,13 @@ class OutboxPublicationIntegrationTest {
 
 	@Test
 	void sleepsWithoutRepeatedOutboxReadsAndWakesOnInsertion() {
-		long empty = registry.get("outbox.event.duration").tag("outcome", "empty").timer().count();
+		long empty = registry.get("outbox.select.duration").tag("outcome", "empty").timer().count();
 		try (OutboxNotificationListener listener = listener()) {
 			listener.start();
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
-					assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
+					assertThat(registry.get("outbox.select.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
 			await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
-					assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
+					assertThat(registry.get("outbox.select.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
 			insertEvent();
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
 			assertThat(records()).hasSize(1);
@@ -256,11 +279,11 @@ class OutboxPublicationIntegrationTest {
 				alter table event_outbox add constraint test_reject_publication
 				check (event_type <> 'OutboxTest' or published_at is null)
 				""");
-		double errors = registry.get("outbox.event.duration").tag("outcome", "error").timer().count();
+		double errors = count("outbox.batch.duration", "error");
 		try (OutboxNotificationListener listener = listener()) {
 			listener.start();
 			await().atMost(Duration.ofSeconds(3)).until(() ->
-					registry.get("outbox.event.duration").tag("outcome", "error").timer().count() > errors);
+					count("outbox.batch.duration", "error") > errors);
 			jdbc.execute("alter table event_outbox drop constraint test_reject_publication");
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
 			assertThat(records()).allSatisfy(record ->
@@ -278,13 +301,37 @@ class OutboxPublicationIntegrationTest {
 				statement.setObject(1, event.getId());
 				statement.executeQuery().close();
 			}
-			double empty = registry.get("outbox.event.duration").tag("outcome", "empty").timer().count();
+			double empty = count("outbox.select.duration", "empty");
 			listener.start();
 			await().atMost(Duration.ofSeconds(3)).until(() ->
-					registry.get("outbox.event.duration").tag("outcome", "empty").timer().count() > empty);
+					count("outbox.select.duration", "empty") > empty);
 			assertThat(pendingCount()).isEqualTo(1);
 			locking.rollback();
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
+		}
+	}
+
+	@Test
+	void wakesOnANotificationInsteadOfWaitingTheRetryDelayWhileOtherRowsAreLocked() throws Exception {
+		OutboxEvent locked = insertEvent();
+		try (Connection locking = notificationsDataSource().getConnection();
+				// A long retry delay: only a notification can wake the publisher within the test timeout.
+				OutboxNotificationListener listener = listener(10_000)) {
+			locking.setAutoCommit(false);
+			try (var statement = locking.prepareStatement("select id from event_outbox where id = ? for update")) {
+				statement.setObject(1, locked.getId());
+				statement.executeQuery().close();
+			}
+			double empty = count("outbox.select.duration", "empty");
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).until(() -> count("outbox.select.duration", "empty") > empty);
+
+			OutboxEvent committed = insertEvent();
+
+			await().atMost(Duration.ofSeconds(3)).until(() -> jdbc.queryForObject(
+					"select published_at is not null from event_outbox where id = ?", Boolean.class, committed.getId()));
+			assertThat(pendingCount()).isEqualTo(1);
+			locking.rollback();
 		}
 	}
 
@@ -293,7 +340,7 @@ class OutboxPublicationIntegrationTest {
 		TransactionTemplate transaction = new TransactionTemplate(transactionManager);
 		transaction.executeWithoutResult(status -> {
 			reserveBed();
-			assertThat(publicationService.publishNext()).isFalse();
+			assertThat(publicationService.publishBatch(10)).isZero();
 			status.setRollbackOnly();
 		});
 		assertThat(pendingCount()).isZero();
@@ -318,14 +365,15 @@ class OutboxPublicationIntegrationTest {
 			redis.setConnectionFactory(original);
 			unavailable.destroy();
 		}
-		assertThat(publicationService.publishNext()).isTrue();
+		assertThat(publicationService.publishBatch(10)).isEqualTo(1);
 		assertThat(pendingCount()).isZero();
 		assertThat(records()).hasSize(1);
 	}
 
 	@Test
-	void rejectsAnUntrustedServerCertificateAndLeavesTheEventPending() {
+	void rejectsAnUntrustedServerCertificateAndLeavesTheWholeBatchPending() {
 		OutboxEvent event = insertEvent();
+		insertEvent();
 		LettuceConnectionFactory original = (LettuceConnectionFactory) redis.getConnectionFactory();
 		LettuceClientConfiguration noLocalCa = LettuceClientConfiguration.builder()
 				.commandTimeout(Duration.ofSeconds(2)).useSsl().and().build();
@@ -333,38 +381,38 @@ class OutboxPublicationIntegrationTest {
 		untrusted.afterPropertiesSet();
 		try {
 			redis.setConnectionFactory(untrusted);
-			assertThatThrownBy(() -> publicationService.publishNext()).isInstanceOf(DataAccessException.class);
-			assertThat(pendingCount()).isEqualTo(1);
+			assertThatThrownBy(() -> publicationService.publishBatch(10)).isInstanceOf(DataAccessException.class);
+			assertThat(pendingCount()).isEqualTo(2);
 			assertThat(jdbc.queryForObject("select published_at from event_outbox where id = ?", Instant.class, event.getId())).isNull();
 		} finally {
 			redis.setConnectionFactory(original);
 			untrusted.destroy();
 		}
-		assertThat(publicationService.publishNext()).isTrue();
+		assertThat(publicationService.publishBatch(10)).isEqualTo(2);
 	}
 
 	@Test
-	void keepsTheSameEventIdWhenTheDatabaseCommitFailsAfterRedisAcceptedIt() {
-		OutboxEvent event = insertEvent();
+	void sendsTheWholeBatchAgainWithTheSameEventIdsWhenTheDatabaseCommitFails() {
+		OutboxEvent first = insertEvent();
+		OutboxEvent second = insertEvent();
 		jdbc.execute("""
 				alter table event_outbox add constraint test_reject_publication
 				check (event_type <> 'OutboxTest' or published_at is null)
 				""");
 
-		assertThatThrownBy(() -> publicationService.publishNext()).isInstanceOf(DataIntegrityViolationException.class);
-		assertThat(pendingCount()).isEqualTo(1);
-		assertThat(records()).hasSize(1);
+		assertThatThrownBy(() -> publicationService.publishBatch(10)).isInstanceOf(DataIntegrityViolationException.class);
+		assertThat(pendingCount()).isEqualTo(2);
+		assertThat(records()).hasSize(2);
 		jdbc.execute("alter table event_outbox drop constraint test_reject_publication");
 
-		assertThat(publicationService.publishNext()).isTrue();
+		assertThat(publicationService.publishBatch(10)).isEqualTo(2);
 		assertThat(pendingCount()).isZero();
-		assertThat(records()).hasSize(2).allSatisfy(record ->
-				assertThat(record.getValue()).containsEntry("eventId", event.getId().toString())
-		);
+		assertThat(records()).extracting(record -> record.getValue().get("eventId")).containsExactly(
+				first.getId().toString(), second.getId().toString(), first.getId().toString(), second.getId().toString());
 	}
 
 	@Test
-	void commitsEachSuccessfulEventWithinTheBatch() {
+	void publishesAtMostOneBatchPerPass() {
 		insertEvent();
 		insertEvent();
 		insertEvent();
@@ -390,8 +438,8 @@ class OutboxPublicationIntegrationTest {
 			for (int i = 0; i < 4; i++) {
 				futures.add(executor.submit(() -> {
 					assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
-					while (publicationService.publishNext()) {
-						// Drain unlocked rows using a separate transaction for every event.
+					while (publicationService.publishBatch(2) > 0) {
+						// Drain unlocked rows in small batches, one transaction per batch.
 					}
 					return null;
 				}));
@@ -411,15 +459,15 @@ class OutboxPublicationIntegrationTest {
 	@Test
 	void retentionKeepsUnacknowledgedEventsUntilEveryGroupHasAcknowledgedThem() {
 		for (int i = 0; i < 220; i++) {
-			publisher.publish(new OutboxEvent(UUID.randomUUID(), "OutboxTest", UUID.randomUUID(), Instant.now(), "{}"));
+			publisher.publish(List.of(testEvent()));
 		}
 		assertThat(records()).hasSize(220);
 		acknowledgeAll("outbox-consumers");
-		publisher.publish(new OutboxEvent(UUID.randomUUID(), "OutboxTest", UUID.randomUUID(), Instant.now(), "{}"));
+		publisher.publish(List.of(testEvent()));
 		assertThat(records()).hasSize(221);
 		acknowledgeAll("outbox-consumers");
 		acknowledgeAll("outbox-audit");
-		publisher.publish(new OutboxEvent(UUID.randomUUID(), "OutboxTest", UUID.randomUUID(), Instant.now(), "{}"));
+		publisher.publish(List.of(testEvent()));
 		assertThat(records().size()).isBetween(1, 100);
 	}
 
@@ -433,15 +481,23 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	private OutboxEvent insertEvent() {
-		OutboxEvent event = new OutboxEvent(UUID.randomUUID(), "OutboxTest", UUID.randomUUID(), Instant.now(), "{}");
+		return insertEvent(Instant.now());
+	}
+
+	private OutboxEvent insertEvent(Instant occurredAt) {
+		OutboxEvent event = new OutboxEvent(UUID.randomUUID(), "OutboxTest", UUID.randomUUID(), occurredAt, "{}");
 		jdbc.update("insert into event_outbox (id, event_type, aggregate_id, occurred_at, payload) values (?, ?, ?, ?, ?::jsonb)",
 				event.getId(), event.getEventType(), event.getAggregateId(), java.sql.Timestamp.from(event.getOccurredAt()), event.getPayload());
 		return event;
 	}
 
 	private OutboxNotificationListener listener() {
+		return listener(50);
+	}
+
+	private OutboxNotificationListener listener(long retryDelay) {
 		return new OutboxNotificationListener(notificationsDataSource(),
-				new OutboxPublisher(publicationService, 2, metrics), publicationService, 50);
+				new OutboxPublisher(publicationService, 2, metrics), publicationService, retryDelay);
 	}
 
 	private DriverManagerDataSource notificationsDataSource() {

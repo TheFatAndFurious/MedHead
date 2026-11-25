@@ -200,25 +200,34 @@ jusqu'à épuisement, puis reste bloqué en attente d'une notification, sans
 interrogation périodique de la table. Il s'abonne avant de lire les événements
 déjà présents au démarrage ou après une reconnexion.
 `MEDHEAD_OUTBOX_BATCH_SIZE` (de 1 à 1 000) règle la taille des lots.
-`MEDHEAD_OUTBOX_RETRY_DELAY` (millisecondes, 1 000 par défaut) règle uniquement
-l'attente avant une nouvelle tentative après une erreur ou lorsqu'un événement
-en attente est verrouillé par un autre publieur. Il remplace l'ancien réglage
+`MEDHEAD_OUTBOX_RETRY_DELAY` (millisecondes, 1 000 par défaut) règle l'attente
+avant une nouvelle tentative après une erreur. Si des événements restent en
+attente après un lot incomplet, soit ils ont été validés pendant le lot et leur
+notification est déjà arrivée, soit un autre publieur les verrouille et pourrait
+annuler sans notifier : le dispatcher attend alors une notification, au plus
+pendant ce délai. Il remplace l'ancien réglage
 `MEDHEAD_OUTBOX_POLL_DELAY`.
 `MEDHEAD_OUTBOX_ENABLED=false` suspend la publication tout en conservant
 l'enregistrement des réservations et des événements dans PostgreSQL.
 
-Chaque événement est lu dans sa propre transaction avec `FOR UPDATE SKIP LOCKED`
-pour que plusieurs instances de l'API puissent publier sans sélectionner la
-même ligne simultanément. Le publieur envoie l'événement en TLS, attend la
-confirmation de `XADD`, puis renseigne `published_at`. Les lignes publiées sont
-conservées dans PostgreSQL. En cas d'échec, la transaction de cet événement est
-annulée et une nouvelle tentative est différée ; les publications
-précédentes du lot restent validées.
+Chaque lot est publié dans une seule transaction. Le publieur verrouille
+jusqu'à 100 événements avec `FOR UPDATE SKIP LOCKED`, pour que plusieurs
+instances de l'API puissent publier sans sélectionner la même ligne. Il les
+envoie en TLS dans un seul pipeline de `XADD`, dans l'ordre de l'outbox, et
+attend la confirmation de chaque entrée. Il renseigne ensuite `published_at`
+pour tout le lot avec une seule requête `UPDATE`, puis valide. Un lot coûte
+donc un aller-retour Redis et un commit PostgreSQL, au lieu d'un par
+événement ; avec `appendfsync always`, Redis ne synchronise en principe son
+fichier AOF qu'une fois pour les commandes reçues ensemble. Les lignes
+publiées sont conservées dans PostgreSQL. En cas d'échec, toute la
+transaction du lot est annulée et une nouvelle tentative est différée.
 
-La livraison suit une garantie **au moins une fois** : si Redis accepte l'envoi
-mais que l'API tombe avant le commit PostgreSQL, l'événement sera renvoyé avec
-le même `eventId`. Chaque futur consommateur devra utiliser cet identifiant
-pour rendre son traitement idempotent.
+La livraison suit une garantie **au moins une fois** : si Redis accepte tout
+ou partie du lot mais que l'envoi échoue ensuite, ou que l'API tombe avant le
+commit PostgreSQL, **tout le lot** sera renvoyé avec les mêmes `eventId`. Un
+lot plus grand réduit le coût par événement mais augmente le nombre de
+doublons possibles après une panne. Chaque futur consommateur devra utiliser
+cet identifiant pour rendre son traitement idempotent.
 
 Les champs du message Redis sont `eventId`, `type`, `aggregateId`, `occurredAt`
 et `payload`. `payload` contient le JSON enregistré dans l'outbox et `type`
@@ -507,8 +516,9 @@ Ces tests couvrent la publication TLS, le refus d'un certificat non fiable,
 la reprise après erreur d'authentification, le rollback, l'exclusion des
 transactions non validées, les publications concurrentes et la rétention
 `ACKED`. Ils vérifient aussi que les groupes ne sont créés qu'une fois, puis
-recréés avec le stream si celui-ci est supprimé. Ils vérifient aussi qu'un échec du commit PostgreSQL après l'envoi
-Redis produit un doublon avec le même `eventId` lors de la reprise.
+recréés avec le stream si celui-ci est supprimé. Ils vérifient aussi qu'un échec Redis ou un échec du commit PostgreSQL
+laisse tout le lot en attente, que la reprise renvoie le lot avec les mêmes
+`eventId`, et que l'ordre de l'outbox est conservé dans le stream.
 
 Pour utiliser d'autres ports, définir `TEST_POSTGRES_PORT` et `TEST_REDIS_PORT`
 lors du démarrage Docker, puis passer les valeurs correspondantes via

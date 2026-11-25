@@ -52,16 +52,15 @@ public class OutboxNotificationListener implements SmartLifecycle, AutoCloseable
 				while (running) {
 					OutboxPublisher.Result result = publisher.publishPending();
 					if (result == OutboxPublisher.Result.FULL) continue;
-					if (result == OutboxPublisher.Result.ERROR || service.hasPending()) {
-						// Pending rows may be locked by a different publisher that later rolls back.
+					if (result == OutboxPublisher.Result.ERROR) {
 						awaitRetry();
 						continue;
 					}
-					PGNotification[] received;
-					do {
-						// Block on the socket: no SQL query or periodic wake-up while idle.
-						received = postgres.getNotifications(0);
-					} while (running && (received == null || received.length == 0));
+					// Rows still pending after a partial batch were either committed after its SELECT, and their
+					// notification is already queued, or locked by another publisher that may roll back without
+					// notifying: wait for a notification, but no longer than the retry delay. Sleeping instead
+					// delayed every event committed during a batch by up to the retry delay under load.
+					awaitNotification(postgres, service.hasPending() ? retryDelay : 0);
 				}
 			} catch (SQLException | RuntimeException exception) {
 				if (running) {
@@ -72,6 +71,19 @@ public class OutboxNotificationListener implements SmartLifecycle, AutoCloseable
 				connection = null;
 			}
 		}
+	}
+
+	/** Blocks on the socket until a notification arrives, or at most {@code timeout} ms (0: no limit). */
+	private void awaitNotification(PGConnection postgres, long timeout) throws SQLException {
+		if (timeout > 0) {
+			postgres.getNotifications((int) Math.min(timeout, Integer.MAX_VALUE));
+			return;
+		}
+		PGNotification[] received;
+		do {
+			// No SQL query or periodic wake-up while idle.
+			received = postgres.getNotifications(0);
+		} while (running && (received == null || received.length == 0));
 	}
 
 	private void awaitRetry() {

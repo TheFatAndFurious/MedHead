@@ -16,6 +16,7 @@ import org.springframework.transaction.support.DefaultTransactionStatus;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -26,49 +27,55 @@ class OutboxPublisherMetricsTest {
 	private final MockClock clock = new MockClock();
 	private final SimpleMeterRegistry registry = new SimpleMeterRegistry(SimpleConfig.DEFAULT, clock);
 	private final OutboxMetrics metrics = new OutboxMetrics(registry);
+	private final List<Integer> limits = new ArrayList<>();
 	private boolean failCommit;
 
 	@Test
-	void measuresTransactionBeginAndCommitAroundTheServiceCall() {
-		new OutboxPublisher(service(true), 1, metrics).publishPending();
+	void measuresTransactionBeginAndCommitAroundTheBatch() {
+		new OutboxPublisher(service(2), 2, metrics).publishPending();
 
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "published")
-				.timer().totalTime(TimeUnit.MILLISECONDS)).isEqualTo(6);
 		assertThat(registry.get("outbox.batch.duration").tag("outcome", "full")
 				.timer().totalTime(TimeUnit.MILLISECONDS)).isEqualTo(6);
 		assertThat(registry.get("outbox.batch.size").tag("outcome", "full")
-				.summary().totalAmount()).isEqualTo(1);
+				.summary().totalAmount()).isEqualTo(2);
 	}
 
 	@Test
-	void countsACommitFailureAsAnErrorInsteadOfAPublishedEvent() {
+	void countsACommitFailureAsAnErrorWithoutPublishedEvents() {
 		failCommit = true;
 
-		new OutboxPublisher(service(true), 1, metrics).publishPending();
+		new OutboxPublisher(service(2), 2, metrics).publishPending();
 
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "published").timer().count()).isZero();
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "error")
+		assertThat(registry.get("outbox.batch.duration").tag("outcome", "full").timer().count()).isZero();
+		assertThat(registry.get("outbox.batch.duration").tag("outcome", "error")
 				.timer().totalTime(TimeUnit.MILLISECONDS)).isEqualTo(6);
-		assertThat(registry.get("outbox.batch.duration").tag("outcome", "error").timer().count()).isEqualTo(1);
+		assertThat(registry.get("outbox.batch.size").tag("outcome", "error").summary().count()).isEqualTo(1);
 		assertThat(registry.get("outbox.batch.size").tag("outcome", "error").summary().totalAmount()).isZero();
 	}
 
 	@Test
-	void separatesEmptyPollsAndRecordsTheGapAfterThePreviousBatch() {
-		OutboxPublisher publisher = new OutboxPublisher(service(true, false), 2, metrics);
-		publisher.publishPending();
+	void reportsAPartialBatchAsEmptyAndRecordsTheGapAfterThePreviousBatch() {
+		OutboxPublisher publisher = new OutboxPublisher(service(1, 0), 2, metrics);
+		assertThat(publisher.publishPending()).isEqualTo(OutboxPublisher.Result.EMPTY);
 		clock.add(Duration.ofSeconds(1));
-		publisher.publishPending();
+		assertThat(publisher.publishPending()).isEqualTo(OutboxPublisher.Result.EMPTY);
 
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "published").timer().count()).isEqualTo(1);
-		assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count()).isEqualTo(2);
 		assertThat(registry.get("outbox.batch.size").tag("outcome", "empty").summary().count()).isEqualTo(2);
 		assertThat(registry.get("outbox.batch.size").tag("outcome", "empty").summary().totalAmount()).isEqualTo(1);
 		assertThat(registry.get("outbox.batch.gap").timer().totalTime(TimeUnit.MILLISECONDS)).isEqualTo(1000);
 	}
 
-	private OutboxPublicationService service(Boolean... results) {
-		StubService target = new StubService(metrics, new ArrayDeque<>(List.of(results)), clock);
+	@Test
+	void asksTheServiceForOneBatchOfTheConfiguredSize() {
+		OutboxPublicationService service = service(3);
+
+		assertThat(new OutboxPublisher(service, 3, metrics).publishPending()).isEqualTo(OutboxPublisher.Result.FULL);
+
+		assertThat(limits).containsExactly(3);
+	}
+
+	private OutboxPublicationService service(Integer... results) {
+		StubService target = new StubService(metrics, new ArrayDeque<>(List.of(results)), clock, limits);
 		AbstractPlatformTransactionManager manager = new AbstractPlatformTransactionManager() {
 			@Override
 			protected Object doGetTransaction() { return new Object(); }
@@ -94,20 +101,24 @@ class OutboxPublisherMetricsTest {
 
 	static class StubService extends OutboxPublicationService {
 
-		private final ArrayDeque<Boolean> results;
+		private final ArrayDeque<Integer> results;
 		private final MockClock clock;
+		private final List<Integer> limits;
 
-		StubService(OutboxMetrics metrics, ArrayDeque<Boolean> results, MockClock clock) {
+		StubService(OutboxMetrics metrics, ArrayDeque<Integer> results, MockClock clock, List<Integer> limits) {
 			super(null, null, metrics);
 			this.results = results;
 			this.clock = clock;
+			this.limits = limits;
 		}
 
 		@Override
 		@Transactional(propagation = Propagation.REQUIRES_NEW)
-		public boolean publishNext() {
+		public int publishBatch(int limit) {
+			limits.add(limit);
 			clock.add(Duration.ofMillis(1));
-			return Boolean.TRUE.equals(results.poll());
+			Integer published = results.poll();
+			return published == null ? 0 : published;
 		}
 	}
 }

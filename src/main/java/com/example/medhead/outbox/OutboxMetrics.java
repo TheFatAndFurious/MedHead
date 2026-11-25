@@ -15,8 +15,8 @@ public class OutboxMetrics {
 		// Register even unused outcomes so collectors can distinguish zero from unavailable.
 		Map.of(
 				"batch", List.of("full", "empty", "error"),
-				"event", List.of("published", "empty", "error"),
 				"select", List.of("found", "empty", "error"),
+				"update", List.of("success", "error"),
 				"redis.group", List.of("created", "existing", "error"),
 				"redis.add", List.of("success", "missing", "error")
 		).forEach((operation, outcomes) -> outcomes.forEach(outcome ->

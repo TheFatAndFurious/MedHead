@@ -6,6 +6,7 @@ import org.springframework.util.Assert;
 
 public class OutboxPublisher {
 
+	/** FULL: a whole batch was published, more events may be waiting. EMPTY: fewer events than the batch size. */
 	public enum Result { FULL, EMPTY, ERROR }
 
 	private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
@@ -29,25 +30,14 @@ public class OutboxPublisher {
 		int published = 0;
 		String outcome = "error";
 		try {
-			for (int i = 0; i < batchSize; i++) {
-				long eventStartedAt = metrics.start();
-				String eventOutcome = "error";
-				boolean found;
-				try {
-					// The transactional proxy returns only after flush and commit.
-					found = service.publishNext();
-					eventOutcome = found ? "published" : "empty";
-				} finally {
-					metrics.record("event", eventOutcome, eventStartedAt);
-				}
-				if (!found) {
-					outcome = "empty";
-					return Result.EMPTY;
-				}
-				published++;
+			// The transactional proxy returns only after flush and commit.
+			published = service.publishBatch(batchSize);
+			if (published == batchSize) {
+				outcome = "full";
+				return Result.FULL;
 			}
-			outcome = "full";
-			return Result.FULL;
+			outcome = "empty";
+			return Result.EMPTY;
 		} catch (RuntimeException exception) {
 			log.warn("Outbox publication failed; pending events will be retried: {}", exception.getMessage());
 			return Result.ERROR;
