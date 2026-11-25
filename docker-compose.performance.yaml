@@ -37,6 +37,22 @@ services:
     ports: !override []
     # Reference: 2 CPUs. PERF_DATABASE_CPUS raises it to check whether the API itself holds
     # the load once the database is no longer the bottleneck.
+    # Same settings as the image, plus the WAL write and fsync timings (pg_stat_wal) read by
+    # tests/performance/io_usage.py.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - track_wal_io_timing=on
     cpus: ${PERF_DATABASE_CPUS:-2}
     mem_limit: 2g
 

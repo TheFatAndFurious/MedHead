@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 from campaign import (api_latency_verdict, beds_per_hospital, load_profile, outbox_verdict,
                       phase_at)
 from outbox_metrics import FIELDS, collect
+import io_usage
 import resource_usage
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -145,6 +146,8 @@ def main():
         command(COMPOSE + ['exec', '-T', 'redis', 'sh', '-c',
                 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --tls --cacert /tls/ca.crt '
                 '--sni redis -h redis DEL medhead:reservations'])
+        compose_exec = io_usage.compose_exec_with(COMPOSE)
+        io_usage.reset_redis_latency(compose_exec)
         stop = threading.Event()
         monitor_errors = []
         # An overloaded API also delays Actuator: count these timeouts, keep sampling the outbox.
@@ -213,8 +216,40 @@ def main():
                     if stop.wait(max(0.0, SAMPLE_PERIOD - (time.time() - began))):
                         return
 
+        def sample_io():
+            # Disk pressure and fsync timings, to tell disk waits from CPU or lock waits.
+            with (output / 'io.csv').open('w') as io_log, \
+                    (output / 'pg-waits.csv').open('w') as wait_log, \
+                    (output / 'redis-latency.csv').open('w') as latency_log:
+                io_writer = csv.DictWriter(io_log, fieldnames=io_usage.IO_FIELDS)
+                wait_writer = csv.DictWriter(wait_log, fieldnames=io_usage.WAIT_FIELDS)
+                latency_writer = csv.DictWriter(latency_log, fieldnames=io_usage.LATENCY_FIELDS)
+                for writer in (io_writer, wait_writer, latency_writer):
+                    writer.writeheader()
+                seen = set()
+                while True:
+                    began = time.time()
+                    try:
+                        rows, waits, latencies = io_usage.sample(compose_exec, utc_now(), began)
+                    except (subprocess.CalledProcessError, ValueError, KeyError, IndexError,
+                            StopIteration) as error:
+                        monitor_errors.append(f'io: {error}')
+                        return
+                    io_writer.writerows(rows)
+                    wait_writer.writerows(waits)
+                    # Redis keeps the slowest fsync of each second: write each second once.
+                    for (event, second), latency in sorted(latencies.items()):
+                        if (event, second) not in seen:
+                            seen.add((event, second))
+                            latency_writer.writerow({'event': event, 'epoch': second,
+                                                     'latency_ms': latency})
+                    for log in (io_log, wait_log, latency_log):
+                        log.flush()
+                    if stop.wait(max(0.0, SAMPLE_PERIOD - (time.time() - began))):
+                        return
+
         workers = [threading.Thread(target=target, daemon=True)
-                   for target in (monitor, sample_resources)]
+                   for target in (monitor, sample_resources, sample_io)]
         for worker in workers:
             worker.start()
         try:
@@ -270,6 +305,10 @@ def main():
                         'oldest': float(row['oldest_pending_seconds'])} for row in csv.DictReader(log)]
         with (output / 'resources.csv').open() as log:
             resource_rows = list(csv.DictReader(log))
+        io_tables = []
+        for name in ('io.csv', 'pg-waits.csv', 'redis-latency.csv'):
+            with (output / name).open() as log:
+                io_tables.append(list(csv.DictReader(log)))
         api = api_latency_verdict(summary, profile, args.mode)
         outbox = outbox_verdict(samples, outbox_lag(profile, start_epoch), profile, start_epoch,
                                 events, published, pending)
@@ -283,6 +322,7 @@ def main():
             'consistency': {'passed': consistent, 'matches_http': matches_http,
                             'created_http': created, 'reservations_in_database': reservations},
             'resources': resource_usage.summarize(resource_rows, profile, start_epoch, phase_at),
+            'io': io_usage.summarize(*io_tables, profile, start_epoch, phase_at),
             'monitor_errors': monitor_errors, 'actuator_errors': len(actuator_errors),
             'actuator_error_samples': actuator_errors[:5]}
         (output / 'verdict.json').write_text(json.dumps(verdict, indent=2, ensure_ascii=False) + '\n')

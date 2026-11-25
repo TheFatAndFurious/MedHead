@@ -60,7 +60,7 @@ démarre une seule API et fixe explicitement les limites de chaque conteneur :
 | Conteneur | CPU | Mémoire | Remarque |
 | --- | --- | --- | --- |
 | `api` | 2 | 1 Gio | Instance mesurée ; tas JVM jusqu'à 75 % (`-XX:MaxRAMPercentage=75`) |
-| `database` (PostGIS) | 2 | 2 Gio | Réglages PostgreSQL par défaut |
+| `database` (PostGIS) | 2 | 2 Gio | Réglages PostgreSQL par défaut, plus `track_wal_io_timing=on` |
 | `redis` | 1 | 512 Mio | `maxmemory` 256 Mo, stream limité à 10 000 entrées |
 | `keycloak` | 1 | 1 Gio | Émet un seul jeton et ses clés pendant la campagne |
 | `identity-database` | 0,5 | 256 Mio | Base de Keycloak |
@@ -169,7 +169,9 @@ Les résultats bruts sont conservés dans `.local/performance/<date>-<mode>/`
 - `k6.txt`, `summary.json` : débits, latences et seuils par phase et flux.
 - `verdict.json` : environnement (hôte, Docker, limites des conteneurs,
   versions, commit, état du dépôt), profil, verdicts (a) et (b) avec les
-  tableaux par phase, cohérence et synthèse des ressources par phase.
+  tableaux par phase, cohérence, synthèse des ressources par phase et
+  synthèse des entrées-sorties disque par phase (bloc `io`, voir
+  [Entrées-sorties disque](#entrées-sorties-disque)).
 - `consistency.txt` : cohérence interne (lits consommés, réservations,
   demandes et événements, identifiants et payloads) et rapprochement avec
   les réponses `201`.
@@ -181,6 +183,8 @@ Les résultats bruts sont conservés dans `.local/performance/<date>-<mode>/`
   (CPU, mémoire et limite, processus) pour chaque conteneur, plus le processus
   k6 de l'hôte relevé avec `ps`. Le CPU s'exprime en pourcentage d'un cœur :
   200 % correspond aux deux CPU de l'API.
+- `io.csv`, `pg-waits.csv`, `redis-latency.csv` : relevés disque, attentes
+  PostgreSQL et latences de synchronisation Redis (voir ci-dessous).
 - `compose.yaml`, `startup.txt`, `k6-version.txt`, `working-tree.txt`.
   La configuration locale peut contenir des mots de passe de démonstration :
   examiner ces fichiers avant de partager un rapport.
@@ -202,6 +206,40 @@ publication déclarée. Aucun consommateur métier n'est simulé, mais le
 consommateur de démonstration `event-consumer` lit et acquitte les événements
 du groupe `reservation-consumers`, ce qui permet à la rétention `ACKED` de
 réduire le stream. Les campagnes du 22 novembre 2026 ont été menées sans lui.
+
+## Entrées-sorties disque
+
+Ces relevés servent à distinguer une attente du disque d'une attente CPU ou de
+verrou. Toutes les cinq secondes, le runner lance trois `docker compose exec`
+(environ 2,5 s au total) :
+
+| Source | Relevé | Fichier |
+| --- | --- | --- |
+| Conteneurs `database` et `redis` | Pression d'entrées-sorties du cgroup (`io.pressure`, temps cumulé pendant lequel au moins une tâche attend le disque) et volume écrit (`io.stat`) | `io.csv` |
+| VM Docker | Pression d'entrées-sorties globale (`/proc/pressure/io`) et compteurs du disque (`/proc/diskstats` : écritures, vidages de cache `flush`, temps passé, occupation) | `io.csv` |
+| PostgreSQL | `pg_stat_wal` : écritures et synchronisations du journal, avec leur durée (`track_wal_io_timing=on`, activé seulement dans le Compose de performance) | `io.csv` |
+| PostgreSQL | Dix instantanés de `pg_stat_activity` à 0,2 s d'intervalle : nombre de sessions actives par événement d'attente (`IO:WalSync`, `LWLock:WALWrite`, `Lock:…`, `CPU` si aucune attente) | `pg-waits.csv` |
+| Redis | `LATENCY HISTORY aof-fsync-always` et `aof-write` : pour chaque seconde, la synchronisation ou l'écriture AOF la plus lente, si elle atteint 1 ms (le runner règle `latency-monitor-threshold` à 1 ms et vide l'historique au départ) ; compteur `aof_delayed_fsync` | `redis-latency.csv`, `io.csv` |
+
+`io.csv` contient des compteurs cumulés (`source`, `metric`, `value`). Le bloc
+`io` de `verdict.json` en tire, par phase, la part du temps en attente du
+disque, le débit d'écriture, la durée moyenne d'une écriture et d'un vidage
+du disque de la VM, le nombre et la durée moyenne des synchronisations du
+journal PostgreSQL, le nombre moyen de sessions actives par événement
+d'attente, et la distribution des latences de synchronisation Redis.
+
+Limites :
+
+- Sous Docker Desktop, le disque `vda` est un fichier de l'hôte. Les durées
+  mesurées sont celles de cette virtualisation : comparer les phases et les
+  variantes entre elles, pas avec un disque de serveur.
+- `LATENCY HISTORY` ne garde que la valeur maximale de chaque seconde, et
+  seulement les 160 dernières secondes : relevée toutes les cinq secondes,
+  elle ne perd rien, mais ne donne pas la moyenne.
+- Les instantanés d'attente sont un échantillon (100 par phase de 5 minutes
+  environ) : ils donnent des proportions, pas des durées.
+- Les sessions de l'API et du publieur partagent le même pool et ne sont pas
+  distinguées.
 
 ## Durées du publieur
 
