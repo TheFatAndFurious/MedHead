@@ -152,11 +152,12 @@ Avec 100 événements par passage et une seconde entre passages, le réglage
 de référence du publieur ne peut pas suivre durablement 800 réservations/s sur une
 seule instance. Il peut aussi être trop juste à 80/s selon le coût des envois.
 Les campagnes de référence ont comparé des délais de 1 000 ms puis 100 ms.
-Le dispatcher est désormais réveillé par `LISTEN / NOTIFY` et enchaîne les lots
-de 100 événements sans délai tant qu'il reste du travail. Il attend une
-notification lorsque l'outbox est vide, avec une lecture de rattrapage au
-démarrage et après reconnexion. Les erreurs et les événements encore verrouillés
-déclenchent une tentative différée, pas un polling permanent de la table vide.
+Le dispatcher a ensuite été réveillé par `LISTEN / NOTIFY`, puis, depuis #41,
+en mémoire après chaque commit qui écrit dans l'outbox, sans `NOTIFY` dans la
+transaction de réservation. Il enchaîne les lots de 100 événements sans délai
+tant qu'il reste du travail, et lit l'outbox au démarrage puis au plus toutes
+les secondes quand rien ne le réveille. Les erreurs déclenchent une tentative
+différée.
 
 Un retard temporaire pendant le pic est acceptable si l'API respecte ses
 critères : il relève du verdict (b), pas du verdict (a). Vérifier ensuite que le retard revient au niveau

@@ -8,7 +8,7 @@ import com.example.medhead.hospital.persistence.NearestHospitalProjection;
 import com.example.medhead.hospital.persistence.ReservationRequestRepository;
 import com.example.medhead.hospital.persistence.SpecialtyRepository;
 import com.example.medhead.outbox.OutboxEvent;
-import com.example.medhead.outbox.OutboxEventRepository;
+import com.example.medhead.outbox.OutboxWriter;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
@@ -26,7 +26,7 @@ public class ReserveNearestAvailableBedService {
 	private final HospitalRepository hospitalRepository;
 	private final SpecialtyRepository specialtyRepository;
 	private final BedReservationRepository reservationRepository;
-	private final OutboxEventRepository outboxRepository;
+	private final OutboxWriter outboxWriter;
 	private final ReservationRequestRepository requestRepository;
 	private final JsonMapper jsonMapper;
 
@@ -34,14 +34,14 @@ public class ReserveNearestAvailableBedService {
 			HospitalRepository hospitalRepository,
 			SpecialtyRepository specialtyRepository,
 			BedReservationRepository reservationRepository,
-			OutboxEventRepository outboxRepository,
+			OutboxWriter outboxWriter,
 			ReservationRequestRepository requestRepository,
 			JsonMapper jsonMapper
 	) {
 		this.hospitalRepository = hospitalRepository;
 		this.specialtyRepository = specialtyRepository;
 		this.reservationRepository = reservationRepository;
-		this.outboxRepository = outboxRepository;
+		this.outboxWriter = outboxWriter;
 		this.requestRepository = requestRepository;
 		this.jsonMapper = jsonMapper;
 	}
@@ -85,7 +85,7 @@ public class ReserveNearestAvailableBedService {
 				UUID.randomUUID(), reservation.getId(), hospital.getId(),
 				hospital.getCode(), specialtyCode, reservedAt
 		);
-		outboxRepository.save(new OutboxEvent(
+		outboxWriter.append(new OutboxEvent(
 				event.eventId(), BedReservedEvent.TYPE, reservation.getId(),
 				reservedAt, jsonMapper.writeValueAsString(event)
 		));

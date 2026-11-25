@@ -176,20 +176,28 @@ ORDER BY occurred_at, id;
 ```
 
 Le profil Spring `redis`, activé automatiquement dans Docker, publie les
-événements en arrière-plan. Un trigger PostgreSQL émet une notification
-`medhead_outbox` après le commit d'une insertion dans l'outbox. Le dispatcher
-l'écoute sur une connexion dédiée et enchaîne des lots de 100 événements
-jusqu'à épuisement, puis reste bloqué en attente d'une notification, sans
-interrogation périodique de la table. Il s'abonne avant de lire les événements
-déjà présents au démarrage ou après une reconnexion.
+événements en arrière-plan. Après le commit d'une transaction qui a écrit dans
+l'outbox (`OutboxWriter`), l'API réveille en mémoire le dispatcher de la même
+instance. Celui-ci enchaîne des lots de 100 événements jusqu'à épuisement, puis
+attend le prochain réveil. Un réveil reçu pendant un lot n'est pas perdu : le
+lot suivant démarre aussitôt. Au démarrage, il publie d'abord les événements
+déjà présents.
+
+La transaction de réservation n'émet plus de `NOTIFY` (déclencheur supprimé par
+la migration V7) : au `COMMIT` d'une transaction qui a émis un `NOTIFY`,
+PostgreSQL prend un verrou exclusif global jusqu'à la fin de l'écriture du
+journal sur disque, ce qui faisait passer les réservations une par une (#41).
+
+`MEDHEAD_OUTBOX_POLL_INTERVAL` (millisecondes, 1 000 par défaut) borne
+l'attente sans réveil. Cette scrutation de secours publie les événements qu'aucun
+réveil local n'annonce : ceux d'une autre instance arrêtée avant de les publier
+ou dont le dispatcher est désactivé, et les lignes libérées par un autre
+publieur qui a annulé sa transaction. Elle coûte une requête par intervalle et
+par instance quand l'outbox est vide.
 `MEDHEAD_OUTBOX_BATCH_SIZE` (de 1 à 1 000) règle la taille des lots.
 `MEDHEAD_OUTBOX_RETRY_DELAY` (millisecondes, 1 000 par défaut) règle l'attente
-avant une nouvelle tentative après une erreur. Si des événements restent en
-attente après un lot incomplet, soit ils ont été validés pendant le lot et leur
-notification est déjà arrivée, soit un autre publieur les verrouille et pourrait
-annuler sans notifier : le dispatcher attend alors une notification, au plus
-pendant ce délai. Il remplace l'ancien réglage
-`MEDHEAD_OUTBOX_POLL_DELAY`.
+avant une nouvelle tentative après une erreur ; les réveils reçus pendant cette
+attente ne l'écourtent pas.
 `MEDHEAD_OUTBOX_ENABLED=false` suspend la publication tout en conservant
 l'enregistrement des réservations et des événements dans PostgreSQL.
 
@@ -257,7 +265,7 @@ ajouté au dépôt ou à l'image.
 | API hors Docker | URL par défaut de `application.properties`, avec `.local/postgres/ca.crt` |
 
 Les paramètres TLS figurent dans l'URL JDBC : ils s'appliquent ainsi au pool
-de connexions et à la connexion dédiée au `LISTEN` de l'outbox. Toute URL
+de connexions. Toute URL
 fournie via `SPRING_DATASOURCE_URL` doit donc les conserver.
 
 Pour lancer l'API hors Docker, copier d'abord le certificat public :
@@ -499,7 +507,9 @@ Ces tests couvrent la publication TLS, le refus d'un certificat non fiable,
 la reprise après erreur d'authentification, le rollback, l'exclusion des
 transactions non validées, les publications concurrentes et la rétention
 `ACKED`. Ils vérifient aussi que les groupes ne sont créés qu'une fois, puis
-recréés avec le stream si celui-ci est supprimé. Ils vérifient aussi qu'un échec Redis ou un échec du commit PostgreSQL
+recréés avec le stream si celui-ci est supprimé. Ils vérifient que le dispatcher n'est réveillé qu'après un commit, jamais
+après un rollback, et que la scrutation rattrape les événements écrits sans
+réveil. Ils vérifient aussi qu'un échec Redis ou un échec du commit PostgreSQL
 laisse tout le lot en attente, que la reprise renvoie le lot avec les mêmes
 `eventId`, et que l'ordre de l'outbox est conservé dans le stream.
 
