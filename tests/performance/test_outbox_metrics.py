@@ -13,7 +13,7 @@ def payload(count, total, statistic='TOTAL_TIME'):
 
 
 class MetricsTest(unittest.TestCase):
-    @patch('outbox_metrics.METRICS', {'outbox.event.duration': ['published']})
+    @patch('outbox_metrics.METRICS', {'outbox.batch.duration': ['full']})
     @patch('outbox_metrics.urlopen')
     def test_metrics_requests_carry_the_access_token(self, urlopen):
         response = MagicMock()
@@ -27,7 +27,7 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(parse_measurements(payload(10, 0.5)), (10, 0.5, 0.2))
         self.assertEqual(parse_measurements(payload(2, 100, 'TOTAL')), (2, 100, 0.2))
 
-    @patch('outbox_metrics.METRICS', {'outbox.event.duration': ['published']})
+    @patch('outbox_metrics.METRICS', {'outbox.batch.duration': ['full']})
     @patch('outbox_metrics.time.monotonic', side_effect=[100, 105])
     @patch('outbox_metrics.urlopen')
     def test_intervals_exclude_preexisting_samples(self, urlopen, monotonic):
@@ -42,15 +42,15 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(measured['interval_count'], 20)
         self.assertAlmostEqual(measured['interval_mean'], 0.005)
         self.assertEqual(measured['interval_rate'], 4)
-        self.assertIn('tag=outcome%3Apublished', urlopen.call_args.args[0])
+        self.assertIn('tag=outcome%3Afull', urlopen.call_args.args[0])
 
-    @patch('outbox_metrics.METRICS', {'outbox.event.duration': ['published']})
+    @patch('outbox_metrics.METRICS', {'outbox.batch.duration': ['full']})
     @patch('outbox_metrics.urlopen')
     def test_an_api_restart_cannot_silently_reset_the_measurements(self, urlopen):
         response = MagicMock()
         response.__enter__.return_value = response
         urlopen.return_value = response
-        previous = {('outbox.event.duration', 'published'): (0, 100, 1)}
+        previous = {('outbox.batch.duration', 'full'): (0, 100, 1)}
         with patch('outbox_metrics.json.load', return_value=payload(1, 0.01)):
             with self.assertRaisesRegex(ValueError, 'Metrics reset'):
                 collect('http://localhost', previous)

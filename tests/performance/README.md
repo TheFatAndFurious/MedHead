@@ -213,22 +213,22 @@ L'instrumentation conserve le fonctionnement des transactions et de la persistan
 
 | Métrique | Mesure | Résultats distingués (`outcome`) |
 | --- | --- | --- |
-| `outbox.batch.duration` | Durée d'un passage du publieur | `full`, `empty`, `error` |
+| `outbox.batch.duration` | Durée d'un passage du publieur : une transaction, ouverture, flush et commit compris | `full`, `empty`, `error` |
 | `outbox.batch.size` | Nombre d'événements publiés et validés par passage | `full`, `empty`, `error` |
 | `outbox.batch.gap` | Temps entre la fin d'un passage et le début du suivant | Aucun |
-| `outbox.event.duration` | Appel au service transactionnel, ouverture, flush et commit compris | `published`, `empty`, `error` |
-| `outbox.select.duration` | Sélection et verrouillage dans PostgreSQL | `found`, `empty`, `error` |
+| `outbox.select.duration` | Sélection et verrouillage du lot dans PostgreSQL | `found`, `empty`, `error` |
+| `outbox.update.duration` | `UPDATE` qui marque tout le lot publié, avant le commit | `success`, `error` |
 | `outbox.redis.group.duration` | Tentative de création du groupe, réponse `BUSYGROUP` comprise ; au premier envoi et après la disparition du stream seulement | `created`, `existing`, `error` |
-| `outbox.redis.add.duration` | `XADD` jusqu'à la confirmation Redis | `success`, `missing` (stream supprimé : groupes recréés, puis nouvel envoi), `error` |
+| `outbox.redis.add.duration` | Pipeline des `XADD` d'un lot, jusqu'à la confirmation de chaque entrée | `success`, `missing` (stream supprimé : groupes recréés, puis nouvel envoi des entrées refusées), `error` |
 
-`full` signifie que le passage a atteint sa limite de lot. `empty` signifie
-qu'une recherche n'a trouvé aucun événement, même si le passage en a publié
-avant cette recherche. `error` peut également concerner un lot partiellement
-publié. Les événements déjà validés restent comptés dans `outbox.batch.size`.
-Un envoi Redis réussi suivi d'un échec du commit compte comme `redis.add=success`
-et `event=error`, jamais comme un événement publié et validé.
-Les durées d'événement correspondent aux appels du dispatcher ; les
-étapes internes sont aussi mesurées lors d'appels directs au service.
+Un passage publie un lot dans une seule transaction. `full` signifie que le
+lot a atteint sa taille maximale : d'autres événements attendent peut-être.
+`empty` signifie que le lot était incomplet, voire vide. `error` signifie que
+la transaction a été annulée : aucun événement du lot n'est validé et
+`outbox.batch.size` compte 0. Un pipeline Redis réussi suivi d'un échec du
+commit compte comme `redis.add=success` et `batch=error`, jamais comme des
+événements publiés et validés. Les étapes internes sont aussi mesurées lors
+d'appels directs au service.
 
 Dans `outbox-metrics.csv`, chaque ligne correspond à une métrique et un résultat :
 
@@ -243,16 +243,16 @@ Dans `outbox-metrics.csv`, chaque ligne correspond à une métrique et un résul
   (multiplier la moyenne par 1 000 pour obtenir des millisecondes), les tailles
   de lots en événements. `interval_rate` s'exprime en observations par seconde.
 
-Pour le débit de publication, utiliser `outbox.event.duration` avec
-`outcome=published`. Comparer la durée des lots à leur taille et au temps
-d'attente `outbox.batch.gap`, puis les durées de sélection et d'opérations
-Redis. Avec le réveil par notification, le gap inclut l'attente de travail
+Pour le débit de publication, additionner les `total` de `outbox.batch.size`
+(`full` et `empty`) et les rapporter à la durée de l'intervalle. Comparer la
+durée des lots à leur taille et au temps d'attente `outbox.batch.gap`, puis
+les durées de sélection, du pipeline Redis et de l'`UPDATE`. Avec le réveil par notification, le gap inclut l'attente de travail
 quand l'outbox est vide ; il doit être très court entre deux lots complets.
 Il peut aussi inclure l'attente avant une nouvelle tentative après erreur.
-Le reste de la durée transactionnelle inclut les traitements Java,
+Le reste de la durée d'un passage inclut les traitements Java,
 l'ouverture de transaction, le flush et le commit ; ce n'est pas une mesure
 isolée du commit. Les relevés HTTP sont successifs et peuvent chevaucher les
-frontières d'un événement ou d'une phase : raisonner sur plusieurs intervalles.
+frontières d'un lot ou d'une phase : raisonner sur plusieurs intervalles.
 Ces mesures ne fournissent pas de p95 par étape.
 
 Les relevés Actuator utilisent des requêtes HTTP supplémentaires, hors du

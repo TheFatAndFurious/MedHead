@@ -9,8 +9,8 @@ METRICS = {
     'outbox.batch.duration': ['full', 'empty', 'error'],
     'outbox.batch.gap': [None],
     'outbox.batch.size': ['full', 'empty', 'error'],
-    'outbox.event.duration': ['published', 'empty', 'error'],
     'outbox.select.duration': ['found', 'empty', 'error'],
+    'outbox.update.duration': ['success', 'error'],
     'outbox.redis.group.duration': ['created', 'existing', 'error'],
     'outbox.redis.add.duration': ['success', 'missing', 'error'],
 }

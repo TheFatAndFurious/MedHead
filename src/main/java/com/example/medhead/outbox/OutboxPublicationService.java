@@ -4,6 +4,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 
 public class OutboxPublicationService {
 
@@ -21,23 +22,41 @@ public class OutboxPublicationService {
 		return repository.hasPending();
 	}
 
+	/**
+	 * Publishes up to {@code limit} pending events in one transaction: one locking SELECT, one Redis
+	 * pipeline, one UPDATE and one commit. If anything fails, no event of the batch is marked published
+	 * and the whole batch is sent again later with the same event ids.
+	 *
+	 * @return the number of events published and committed
+	 */
 	@Transactional(propagation = Propagation.REQUIRES_NEW)
-	public boolean publishNext() {
-		OutboxEvent event;
+	public int publishBatch(int limit) {
+		List<OutboxEvent> events;
 		long startedAt = metrics.start();
 		String outcome = "error";
 		try {
-			event = repository.findNextPending().orElse(null);
-			outcome = event == null ? "empty" : "found";
+			events = repository.lockNextPending(limit);
+			outcome = events.isEmpty() ? "empty" : "found";
 		} finally {
 			metrics.record("select", outcome, startedAt);
 		}
-		if (event == null) {
-			return false;
+		if (events.isEmpty()) {
+			return 0;
 		}
 
-		publisher.publish(event);
-		event.markPublished(Instant.now());
-		return true;
+		publisher.publish(events);
+
+		startedAt = metrics.start();
+		outcome = "error";
+		try {
+			int updated = repository.markPublished(events.stream().map(OutboxEvent::getId).toList(), Instant.now());
+			if (updated != events.size()) {
+				throw new IllegalStateException("Marked " + updated + " of " + events.size() + " outbox events as published");
+			}
+			outcome = "success";
+		} finally {
+			metrics.record("update", outcome, startedAt);
+		}
+		return events.size();
 	}
 }
