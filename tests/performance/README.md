@@ -64,6 +64,7 @@ démarre une seule API et fixe explicitement les limites de chaque conteneur :
 | `redis` | 1 | 512 Mio | `maxmemory` 256 Mo, stream limité à 10 000 entrées |
 | `keycloak` | 1 | 1 Gio | Émet un seul jeton et ses clés pendant la campagne |
 | `identity-database` | 0,5 | 256 Mio | Base de Keycloak |
+| `event-consumer` | 0,5 | 128 Mio | Consommateur de démonstration : acquitte les événements, résumé toutes les 10 s |
 
 La limite CPU de PostgreSQL se règle par `PERF_DATABASE_CPUS` (2 par défaut,
 configuration de référence), par exemple pour vérifier si l'API tient la charge
@@ -197,7 +198,10 @@ depuis l'heure de lancement de k6, à une seconde près.
 Le contrôle SQL rapproche les réservations et événements en base ; il ne
 valide pas individuellement la présence des événements dans Redis, dont la
 rétention peut supprimer des entrées. Le suivi de l'outbox vérifie leur
-publication déclarée. Aucun consommateur métier n'est simulé.
+publication déclarée. Aucun consommateur métier n'est simulé, mais le
+consommateur de démonstration `event-consumer` lit et acquitte les événements
+du groupe `reservation-consumers`, ce qui permet à la rétention `ACKED` de
+réduire le stream. Les campagnes du 22 novembre 2026 ont été menées sans lui.
 
 ## Durées du publieur
 
@@ -214,8 +218,8 @@ L'instrumentation conserve le fonctionnement des transactions et de la persistan
 | `outbox.batch.gap` | Temps entre la fin d'un passage et le début du suivant | Aucun |
 | `outbox.event.duration` | Appel au service transactionnel, ouverture, flush et commit compris | `published`, `empty`, `error` |
 | `outbox.select.duration` | Sélection et verrouillage dans PostgreSQL | `found`, `empty`, `error` |
-| `outbox.redis.group.duration` | Tentative de création du groupe, réponse `BUSYGROUP` comprise | `created`, `existing`, `error` |
-| `outbox.redis.add.duration` | `XADD` jusqu'à la confirmation Redis | `success`, `error` |
+| `outbox.redis.group.duration` | Tentative de création du groupe, réponse `BUSYGROUP` comprise ; au premier envoi et après la disparition du stream seulement | `created`, `existing`, `error` |
+| `outbox.redis.add.duration` | `XADD` jusqu'à la confirmation Redis | `success`, `missing` (stream supprimé : groupes recréés, puis nouvel envoi), `error` |
 
 `full` signifie que le passage a atteint sa limite de lot. `empty` signifie
 qu'une recherche n'a trouvé aucun événement, même si le passage en a publié
