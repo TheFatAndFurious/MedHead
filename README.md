@@ -1,5 +1,22 @@
 # MedHead
 
+## Prérequis
+
+| Outil | Version | Utilisé pour |
+| --- | --- | --- |
+| Docker avec le plugin Compose | Compose 2.24.4 ou plus | Démonstration, tests d'intégration, E2E et de charge, images |
+| JDK | 21 (version de la CI) | Tests et JAR de l'API ; le Maven Wrapper `./mvnw` installe Maven |
+| Node.js et npm | Node 24 | Tests E2E Playwright (les vérifications du front tournent aussi dans Docker) |
+| Python 3 et k6 | — | Tests de charge ([guide](tests/performance/README.md)) |
+
+La démonstration utilise les ports `5432`, `8080`, `5173` et `8180`, et les
+tests d'intégration les ports `55432` et `56379`.
+
+Le Compose de démonstration porte le nom de projet `medhead`. Sur une machine où
+cette stack a déjà tourné, `docker compose up` réutilise ses volumes (données,
+realm Keycloak). Pour repartir de zéro, lancer d'abord `docker compose down -v`,
+qui supprime ces données, ou définir un autre `COMPOSE_PROJECT_NAME`.
+
 ## Démarrage avec Docker
 
 Créer le fichier de configuration locale :
@@ -596,6 +613,30 @@ unset COMPOSE_PROJECT_NAME
 `npm test` ne lance pas ces tests : il se limite aux tests unitaires de
 `frontend/tests/`.
 
+### Tests du front-end
+
+Les tests unitaires (`node:test`) et la vérification des types tournent dans
+l'image de développement du front, sans Node sur la machine hôte (détails dans
+le [guide du front-end](frontend/README.md#vérifications)) :
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml run --build --rm --no-deps frontend npm test
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml run --build --rm --no-deps frontend npm run check
+```
+
+### Construire les artefacts
+
+| Artefact | Commande | Résultat |
+| --- | --- | --- |
+| JAR de l'API | `./mvnw -DskipTests clean package` | `target/medhead-0.1.0-SNAPSHOT.jar` |
+| JAR testé, comme en CI | `clean verify` avec les tests d'intégration (voir [Reproduire les étapes principales en local](#reproduire-les-étapes-principales-en-local)) | Même JAR, après les tests unitaires, d'intégration et d'acceptation |
+| Image de l'API | `docker build --tag medhead:ci .` | Image locale `medhead:ci` |
+| Image du front-end | `docker compose build frontend` | Image locale `medhead-frontend:runtime` |
+
+Le Dockerfile de l'API recompile le code : l'image ne dépend pas d'un JAR
+construit au préalable. Les artefacts versionnés (images GHCR et JAR des
+releases) sont produits par la CI, décrite ci-dessous.
+
 ## Intégration continue
 
 Le workflow GitHub Actions [Backend CI](.github/workflows/ci.yml) exécute trois
@@ -686,9 +727,10 @@ Seul ce job dispose de la permission `contents: write`.
 
 #### Retrouver le commit d'un artefact
 
-Chaque JAR contient `git.properties` (commit, branche) et
-`META-INF/build-info.properties` (version). L'API les expose sans
-authentification, en lecture seule, sur `/actuator/info` :
+Chaque JAR construit depuis un clone Git contient `git.properties` (commit,
+branche) et `META-INF/build-info.properties` (version). L'API les expose sans
+authentification, en lecture seule, sur `/actuator/info`. Pour un JAR lancé
+hors Docker (`java -jar target/medhead-0.1.0-SNAPSHOT.jar`) :
 
 ```bash
 curl -s http://localhost:8080/actuator/info
@@ -699,10 +741,17 @@ curl -s http://localhost:8080/actuator/info
  "build":{"artifact":"medhead","name":"MedHead","time":"…","version":"0.1.0-SNAPSHOT","group":"com.example"}}
 ```
 
+Dans la stack Docker, la même commande renvoie `"git":{}` et seulement la
+partie `build` (voir ci-dessous) : le commit d'une image se lit dans ses labels.
+
 Les images portent les labels OCI `org.opencontainers.image.revision` (SHA
-complet), `.version`, `.created` et `.source` :
+complet), `.version`, `.created` et `.source`. Elles sont publiées pour
+`linux/amd64` uniquement : sur un Mac à processeur Apple, préciser la
+plateforme au téléchargement, sinon Docker répond `no matching manifest for
+linux/arm64/v8`.
 
 ```bash
+docker pull --platform linux/amd64 ghcr.io/thefatandfurious/medhead-api:master
 docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
   ghcr.io/thefatandfurious/medhead-api:master
 ```
@@ -911,9 +960,10 @@ impose :
 
 - **pull request obligatoire** : aucun push direct sur `master`, y compris
   pour les administrateurs ;
-- **contrôles requis** : `frontend-ci` et `backend-ci`, puis `e2e` dès que ce
-  job existe ([#23](https://github.com/TheFatAndFurious/MedHead/issues/23)) ;
-  une PR dont un contrôle est rouge ou en cours ne peut pas être fusionnée ;
+- **contrôles requis** : `frontend-ci`, `backend-ci` et `e2e` ; une PR dont un
+  contrôle est rouge ou en cours ne peut pas être fusionnée ;
+- **historique protégé** : ni suppression de `master`, ni réécriture
+  (`push --force`) ;
 - la fusion est faite par le relecteur, après relecture de la PR.
 
 ### Stratégie de fusion : merge commit
@@ -952,7 +1002,7 @@ git push origin v0.1.0
 
 Le push d'un tag `v*` déclenche la publication des artefacts versionnés
 (images Docker et release GitHub), décrite dans la section
-[Intégration continue](#intégration-continue) ; ces jobs sont ajoutés par
+[Intégration continue](#intégration-continue) ; ces jobs ont été ajoutés par
 [#21](https://github.com/TheFatAndFurious/MedHead/issues/21). Un tag publié
 n'est jamais déplacé : une erreur se corrige par une nouvelle version.
 
