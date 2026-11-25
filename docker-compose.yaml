@@ -171,6 +171,31 @@ services:
     networks:
       - backend
 
+  event-consumer:
+    # Minimal stand-in for a business consumer: logs and acknowledges each event, so that
+    # the ACKED retention can trim the stream. See docker/event-consumer/consumer.py.
+    build:
+      context: .
+      dockerfile: docker/event-consumer/Dockerfile
+    image: medhead-event-consumer:local
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-medhead_redis}
+      REDIS_CA_CERT: /etc/redis-ca/ca.crt
+      STREAM_KEY: ${REDIS_STREAM_KEY:-medhead:reservations}
+      CONSUMER_GROUP: ${EVENT_CONSUMER_GROUP:-reservation-consumers}
+      CONSUMER_LOG_EVENTS: ${EVENT_CONSUMER_LOG_EVENTS:-true}
+    volumes:
+      - redis-ca:/etc/redis-ca:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - backend
+
   frontend:
     # Compiled application. docker-compose.dev.yaml switches to the Vite dev server.
     build:

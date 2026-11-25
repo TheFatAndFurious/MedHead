@@ -59,6 +59,17 @@ services:
     cpus: 1
     mem_limit: 512m
 
+  event-consumer:
+    extends:
+      file: docker-compose.yaml
+      service: event-consumer
+    environment:
+      REDIS_PASSWORD: medhead_perf
+      # One summary line every 10 s instead of one line per event.
+      CONSUMER_LOG_EVENTS: "false"
+    cpus: 0.5
+    mem_limit: 128m
+
   api:
     extends:
       file: docker-compose.yaml

@@ -18,7 +18,7 @@ public class OutboxMetrics {
 				"event", List.of("published", "empty", "error"),
 				"select", List.of("found", "empty", "error"),
 				"redis.group", List.of("created", "existing", "error"),
-				"redis.add", List.of("success", "error")
+				"redis.add", List.of("success", "missing", "error")
 		).forEach((operation, outcomes) -> outcomes.forEach(outcome ->
 				registry.timer("outbox." + operation + ".duration", "outcome", outcome)));
 		registry.timer("outbox.batch.gap");

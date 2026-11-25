@@ -12,7 +12,7 @@ METRICS = {
     'outbox.event.duration': ['published', 'empty', 'error'],
     'outbox.select.duration': ['found', 'empty', 'error'],
     'outbox.redis.group.duration': ['created', 'existing', 'error'],
-    'outbox.redis.add.duration': ['success', 'error'],
+    'outbox.redis.add.duration': ['success', 'missing', 'error'],
 }
 FIELDS = ['timestamp', 'metric', 'outcome', 'base_unit', 'count', 'total', 'max',
           'interval_seconds', 'interval_count', 'interval_mean', 'interval_rate']

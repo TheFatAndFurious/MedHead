@@ -8,7 +8,8 @@ Créer le fichier de configuration locale :
 cp .env.example .env
 ```
 
-Démarrer PostGIS, Redis, Keycloak, l'API et le front-end :
+Démarrer PostGIS, Redis, Keycloak, l'API, le consommateur d'événements de
+démonstration et le front-end :
 
 ```bash
 docker compose up --build
@@ -363,8 +364,15 @@ Le `~` applique une limite approximative, plus efficace qu'une suppression à
 chaque ajout. `ACKED` (disponible depuis Redis 8.2) protège les événements qui
 n'ont pas été acquittés par tous les groupes de consommateurs existants. Si
 un groupe prend du retard, la longueur peut dépasser la cible. Sans groupe,
-`ACKED` ne protège rien. Le publieur crée donc tous les groupes configurés avant
-chaque envoi et ignore uniquement l'erreur indiquant qu'un groupe existe déjà.
+`ACKED` ne protège rien. Le publieur crée donc tous les groupes configurés
+(`XGROUP CREATE … MKSTREAM`) avant son premier envoi, et ignore uniquement
+l'erreur indiquant qu'un groupe existe déjà. Il ne les revérifie pas à chaque
+événement : les groupes vivent avec le stream, et le publieur envoie ses `XADD`
+avec `NOMKSTREAM`. Si le stream a été supprimé, Redis refuse l'ajout au lieu de
+recréer un stream sans groupe ; le publieur recrée alors le stream et ses groupes,
+puis renvoie l'événement. Seule la suppression explicite d'un groupe
+(`XGROUP DESTROY`) sur un stream existant n'est pas détectée avant le
+redémarrage de l'API.
 La limite représente un nombre d'entrées, pas une taille mémoire
 ou une durée. La persistance AOF ne restaure pas les entrées supprimées par
 la rétention.
@@ -373,8 +381,43 @@ la rétention.
 virgules (par défaut `reservation-consumers`). Ils commencent à l'offset `0-0`
 pour inclure les événements déjà présents dans le stream. Prévoir un groupe
 par service qui doit recevoir tous les événements ; les instances d'un même
-service partagent leur groupe. Aucun consommateur métier n'est encore démarré,
-donc les événements restent non acquittés et la cible MAXLEN peut être dépassée.
+service partagent leur groupe. Aucun consommateur métier n'est encore construit :
+le consommateur de démonstration ci-dessous acquitte les événements du groupe
+`reservation-consumers`. Si un groupe ne suit plus (consommateur arrêté), ses
+événements restent non acquittés et la cible MAXLEN peut être dépassée, jusqu'à
+la limite mémoire de Redis.
+
+### Consommateur de démonstration
+
+Le service `event-consumer` ([`docker/event-consumer/consumer.py`](docker/event-consumer/consumer.py))
+remplace un futur consommateur métier (hôpital receveur, tableau de bord). Ce
+script Python lit le stream dans le groupe `reservation-consumers` avec
+`XREADGROUP`, journalise chaque événement (`eventId`, `type`, `aggregateId`,
+`occurredAt`) puis l'acquitte (`XACK`). La rétention `ACKED` peut ainsi réduire
+le stream à sa cible.
+
+- Il se connecte en TLS vérifié avec le même mot de passe que l'API.
+- Il acquitte après la journalisation : un arrêt entre les deux redélivre
+  l'événement au redémarrage (au moins une fois), comme pour un vrai consommateur.
+- Au démarrage, il traite d'abord les événements reçus mais non acquittés avant
+  un arrêt, puis les nouveaux.
+- Si le stream est supprimé (remise à zéro entre deux campagnes de charge), il
+  recrée son groupe et reprend.
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `EVENT_CONSUMER_GROUP` | `reservation-consumers` | Groupe lu et acquitté |
+| `EVENT_CONSUMER_LOG_EVENTS` | `true` | `false` : un résumé toutes les 10 s au lieu d'une ligne par événement |
+
+Suivre les événements reçus et le retard du groupe :
+
+```bash
+docker compose logs -f event-consumer
+docker compose exec redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --tls --cacert /tls/ca.crt --sni redis -h redis XINFO GROUPS medhead:reservations'
+```
+
+`lag` (entrées non encore lues) et `pending` (lues mais non acquittées) restent
+proches de zéro quand le consommateur suit.
 
 ### Renouvellement des certificats locaux
 
@@ -446,7 +489,8 @@ docker compose -f docker-compose.test.yaml down -v
 Ces tests couvrent la publication TLS, le refus d'un certificat non fiable,
 la reprise après erreur d'authentification, le rollback, l'exclusion des
 transactions non validées, les publications concurrentes et la rétention
-`ACKED`. Ils vérifient aussi qu'un échec du commit PostgreSQL après l'envoi
+`ACKED`. Ils vérifient aussi que les groupes ne sont créés qu'une fois, puis
+recréés avec le stream si celui-ci est supprimé. Ils vérifient aussi qu'un échec du commit PostgreSQL après l'envoi
 Redis produit un doublon avec le même `eventId` lors de la reprise.
 
 Pour utiliser d'autres ports, définir `TEST_POSTGRES_PORT` et `TEST_REDIS_PORT`

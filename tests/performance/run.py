@@ -113,7 +113,9 @@ def main():
         output.mkdir()
         command(['k6', 'version'], stdout=(output / 'k6-version.txt').open('w'))
         # Wait for the API only: one-shot services (TLS generators) make `up --wait` fail.
-        command(COMPOSE + ['up', '--build', '-d', '--wait', '--wait-timeout', '300', 'api'],
+        # The event consumer acknowledges events so that the ACKED retention can trim the stream.
+        command(COMPOSE + ['up', '--build', '-d', '--wait', '--wait-timeout', '300', 'api',
+                           'event-consumer'],
                 stdout=(output / 'startup.txt').open('w'))
         command(COMPOSE + ['config'], stdout=(output / 'compose.yaml').open('w'))
         commit = command(['git', 'rev-parse', 'HEAD'], capture_output=True).stdout.strip()
