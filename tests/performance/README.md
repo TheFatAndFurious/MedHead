@@ -157,9 +157,10 @@ Une sortie non nulle indique un verdict (a) ou (b) en échec, une incohérence
 interne, un seuil k6 dépassé ou un échec de collecte. Pour un smoke, seuls la
 cohérence, la collecte et les seuils k6 comptent.
 
-Le dispatcher est réveillé par PostgreSQL avec `LISTEN / NOTIFY` et enchaîne
-les lots sans délai tant qu'il reste des événements disponibles. La taille
-des lots reste de 100 événements.
+Le dispatcher est réveillé en mémoire après chaque réservation validée, avec
+une scrutation de secours toutes les secondes, et enchaîne les lots sans délai
+tant qu'il reste des événements disponibles. La taille des lots reste de
+100 événements.
 
 ## Résultats
 
@@ -246,15 +247,13 @@ Dans `outbox-metrics.csv`, chaque ligne correspond à une métrique et un résul
 Pour le débit de publication, additionner les `total` de `outbox.batch.size`
 (`full` et `empty`) et les rapporter à la durée de l'intervalle. Comparer la
 durée des lots à leur taille et au temps d'attente `outbox.batch.gap`, puis
-les durées de sélection, du pipeline Redis et de l'`UPDATE`. Avec le réveil
-par notification, le gap inclut l'attente de travail quand l'outbox est vide ;
-il doit être très court entre deux lots complets. Il peut aussi inclure
-l'attente avant une nouvelle tentative après erreur, ou l'attente bornée
-d'une notification quand des lignes en attente sont verrouillées par un autre
-publieur. Un gap maximal égal à `MEDHEAD_OUTBOX_RETRY_DELAY` sans erreur ni
-second publieur signale une attente inutile : c'était le cas avant le
-correctif de #40, qui retardait d'environ une seconde les événements validés
-pendant un lot.
+les durées de sélection, du pipeline Redis et de l'`UPDATE`. Avec le réveil en
+mémoire, le gap inclut l'attente de travail quand l'outbox est vide ; il
+doit être très court entre deux lots complets. Il peut aussi inclure
+l'attente avant une nouvelle tentative après erreur. Un gap maximal égal à
+`MEDHEAD_OUTBOX_POLL_INTERVAL` pendant la charge signale un réveil manqué :
+c'était le cas avant le correctif de #40, qui retardait d'environ une seconde
+les événements validés pendant un lot.
 Le reste de la durée d'un passage inclut les traitements Java,
 l'ouverture de transaction, le flush et le commit ; ce n'est pas une mesure
 isolée du commit. Les relevés HTTP sont successifs et peuvent chevaucher les

@@ -1,0 +1,682 @@
+{
+  "mode": "success",
+  "smoke": false,
+  "started_at": "2026-11-25T13:58:19.018845+00:00",
+  "profile": [
+    {
+      "name": "warmup",
+      "start": 0,
+      "duration": 120,
+      "rate": 80,
+      "ramp": true
+    },
+    {
+      "name": "nominal",
+      "start": 120,
+      "duration": 300,
+      "rate": 80,
+      "ramp": false
+    },
+    {
+      "name": "peak",
+      "start": 420,
+      "duration": 300,
+      "rate": 400,
+      "ramp": false
+    },
+    {
+      "name": "recovery",
+      "start": 720,
+      "duration": 300,
+      "rate": 80,
+      "ramp": false
+    }
+  ],
+  "beds_per_available_hospital": 130,
+  "environment": {
+    "commit": "cd0ae9e2250a92b0542c5d08768e9a963f3c92cb",
+    "working_tree_clean": true,
+    "host": {
+      "cpu": "Apple M4",
+      "cpus": 10,
+      "memory_gib": 16.0,
+      "os": "macOS 15.8.1"
+    },
+    "docker": {
+      "server_version": "28.1.1",
+      "operating_system": "Docker Desktop",
+      "cpus": 10,
+      "memory_gib": 15.6,
+      "compose_version": "2.35.1-desktop.1",
+      "project": "medhead-lot6"
+    },
+    "k6_version": "k6 v1.2.1 (go1.24.6, darwin/arm64)",
+    "containers": {
+      "api": {
+        "cpus": 2.0,
+        "memory_mib": 1024,
+        "image": "medhead-lot6-api"
+      },
+      "database": {
+        "cpus": 2.0,
+        "memory_mib": 2048,
+        "image": "medhead-postgis:17"
+      },
+      "event-consumer": {
+        "cpus": 0.5,
+        "memory_mib": 128,
+        "image": "medhead-event-consumer:local"
+      },
+      "identity-database": {
+        "cpus": 0.5,
+        "memory_mib": 256,
+        "image": "postgres:17-alpine"
+      },
+      "keycloak": {
+        "cpus": 1.0,
+        "memory_mib": 1024,
+        "image": "quay.io/keycloak/keycloak:26.8.2"
+      },
+      "redis": {
+        "cpus": 1.0,
+        "memory_mib": 512,
+        "image": "medhead-redis:8.2.10"
+      }
+    },
+    "api_info": {
+      "git": {},
+      "build": {
+        "artifact": "medhead",
+        "name": "MedHead",
+        "time": "2026-11-25T13:57:55.299Z",
+        "version": "0.1.0-SNAPSHOT",
+        "group": "com.example"
+      }
+    }
+  },
+  "k6_exit_code": 99,
+  "k6_warnings": 2,
+  "api_latency": {
+    "passed": false,
+    "threshold_ms": 200,
+    "dropped_iterations": 151,
+    "checks_rate": 0.9999942078344831,
+    "phases": [
+      {
+        "phase": "nominal",
+        "target_rate": 80,
+        "duration_s": 300,
+        "planned_requests": 24000,
+        "requests": 24000,
+        "throughput": 80.0,
+        "error_rate": 0,
+        "p50": 3.195,
+        "p95": 5.539049999999999,
+        "p99": 15.873189999999996,
+        "max": 304.739,
+        "avg": 4.051815041666644
+      },
+      {
+        "phase": "peak",
+        "target_rate": 400,
+        "duration_s": 300,
+        "planned_requests": 120000,
+        "requests": 119849,
+        "throughput": 399.5,
+        "error_rate": 1.66876653121845e-05,
+        "p50": 3.573,
+        "p95": 334.29859999999996,
+        "p99": 615.6595199999998,
+        "max": 2000.163,
+        "avg": 49.42603939123359
+      },
+      {
+        "phase": "recovery",
+        "target_rate": 80,
+        "duration_s": 300,
+        "planned_requests": 24000,
+        "requests": 24000,
+        "throughput": 80.0,
+        "error_rate": 0,
+        "p50": 3.217,
+        "p95": 6.374249999999995,
+        "p99": 20.648179999999996,
+        "max": 457.55,
+        "avg": 4.792358749999969
+      }
+    ],
+    "scenarios": [
+      {
+        "phase": "nominal",
+        "flow": "available",
+        "p50": 3.195,
+        "p95": 5.539049999999999,
+        "p99": 15.873189999999996,
+        "max": 304.739,
+        "avg": 4.051815041666644
+      },
+      {
+        "phase": "peak",
+        "flow": "available",
+        "p50": 3.573,
+        "p95": 334.29859999999996,
+        "p99": 615.6595199999998,
+        "max": 2000.163,
+        "avg": 49.42603939123359
+      },
+      {
+        "phase": "recovery",
+        "flow": "available",
+        "p50": 3.217,
+        "p95": 6.374249999999995,
+        "p99": 20.648179999999996,
+        "max": 457.55,
+        "avg": 4.792358749999969
+      }
+    ],
+    "failures": [
+      "peak: p95 334.29859999999996 ms",
+      "peak: p99 615.6595199999998 ms",
+      "peak: HTTP error rate 1.66876653121845e-05",
+      "peak: 119849 requests sent, 120000 planned",
+      "peak/available: p95 334.29859999999996 ms",
+      "peak/available: p99 615.6595199999998 ms",
+      "151 dropped iterations",
+      "business checks rate 0.9999942078344831"
+    ]
+  },
+  "outbox": {
+    "passed": true,
+    "events": 172648,
+    "published": 172648,
+    "pending_at_end": 0,
+    "drained_after_peak_s": 2.2,
+    "phases": [
+      {
+        "phase": "warmup",
+        "max_pending": 2,
+        "max_oldest_pending_s": 0.01,
+        "events": 4788.0,
+        "published": 4788.0,
+        "lag_p50_ms": 5.7,
+        "lag_p95_ms": 13.7,
+        "lag_p99_ms": 79.4,
+        "lag_max_ms": 596.8
+      },
+      {
+        "phase": "nominal",
+        "max_pending": 3,
+        "max_oldest_pending_s": 0.02,
+        "events": 24000.0,
+        "published": 24000.0,
+        "lag_p50_ms": 4.6,
+        "lag_p95_ms": 6.7,
+        "lag_p99_ms": 16.9,
+        "lag_max_ms": 584.9
+      },
+      {
+        "phase": "peak",
+        "max_pending": 594,
+        "max_oldest_pending_s": 2.23,
+        "events": 119676.0,
+        "published": 119676.0,
+        "lag_p50_ms": 29.7,
+        "lag_p95_ms": 906.1,
+        "lag_p99_ms": 1288.2,
+        "lag_max_ms": 2478.0
+      },
+      {
+        "phase": "recovery",
+        "max_pending": 57,
+        "max_oldest_pending_s": 0.71,
+        "events": 24184.0,
+        "published": 24184.0,
+        "lag_p50_ms": 4.6,
+        "lag_p95_ms": 8.2,
+        "lag_p99_ms": 293.9,
+        "lag_max_ms": 746.9
+      }
+    ],
+    "failures": []
+  },
+  "consistency": {
+    "passed": true,
+    "matches_http": false,
+    "created_http": 172646,
+    "reservations_in_database": 172648
+  },
+  "resources": [
+    {
+      "name": "api",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 22.4,
+      "cpu_max_percent": 53.7,
+      "mem_max_mib": 444.6
+    },
+    {
+      "name": "api",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 44.7,
+      "cpu_max_percent": 184.7,
+      "mem_max_mib": 528.1
+    },
+    {
+      "name": "api",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 19.2,
+      "cpu_max_percent": 29.0,
+      "mem_max_mib": 528.5
+    },
+    {
+      "name": "api",
+      "phase": "warmup",
+      "samples": 23,
+      "cpu_mean_percent": 51.5,
+      "cpu_max_percent": 137.7,
+      "mem_max_mib": 432.1
+    },
+    {
+      "name": "database",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 19.7,
+      "cpu_max_percent": 34.6,
+      "mem_max_mib": 143.8
+    },
+    {
+      "name": "database",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 88.7,
+      "cpu_max_percent": 207.7,
+      "mem_max_mib": 239.5
+    },
+    {
+      "name": "database",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 21.5,
+      "cpu_max_percent": 95.3,
+      "mem_max_mib": 244.9
+    },
+    {
+      "name": "database",
+      "phase": "warmup",
+      "samples": 23,
+      "cpu_mean_percent": 18.9,
+      "cpu_max_percent": 87.4,
+      "mem_max_mib": 112.2
+    },
+    {
+      "name": "event-consumer",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 1.4,
+      "cpu_max_percent": 3.0,
+      "mem_max_mib": 19.1
+    },
+    {
+      "name": "event-consumer",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 3.4,
+      "cpu_max_percent": 5.8,
+      "mem_max_mib": 19.1
+    },
+    {
+      "name": "event-consumer",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 1.4,
+      "cpu_max_percent": 2.4,
+      "mem_max_mib": 19.1
+    },
+    {
+      "name": "event-consumer",
+      "phase": "warmup",
+      "samples": 23,
+      "cpu_mean_percent": 1.1,
+      "cpu_max_percent": 3.1,
+      "mem_max_mib": 19.1
+    },
+    {
+      "name": "identity-database",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 0.4,
+      "cpu_max_percent": 5.2,
+      "mem_max_mib": 81.2
+    },
+    {
+      "name": "identity-database",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 0.5,
+      "cpu_max_percent": 2.5,
+      "mem_max_mib": 79.2
+    },
+    {
+      "name": "identity-database",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 0.5,
+      "cpu_max_percent": 8.0,
+      "mem_max_mib": 79.4
+    },
+    {
+      "name": "identity-database",
+      "phase": "warmup",
+      "samples": 23,
+      "cpu_mean_percent": 0.6,
+      "cpu_max_percent": 2.9,
+      "mem_max_mib": 79.2
+    },
+    {
+      "name": "k6 (host)",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 5.4,
+      "cpu_max_percent": 13.8,
+      "mem_max_mib": 100.4
+    },
+    {
+      "name": "k6 (host)",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 16.3,
+      "cpu_max_percent": 38.8,
+      "mem_max_mib": 191.0
+    },
+    {
+      "name": "k6 (host)",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 6.5,
+      "cpu_max_percent": 51.8,
+      "mem_max_mib": 170.3
+    },
+    {
+      "name": "k6 (host)",
+      "phase": "warmup",
+      "samples": 24,
+      "cpu_mean_percent": 2.9,
+      "cpu_max_percent": 5.0,
+      "mem_max_mib": 94.4
+    },
+    {
+      "name": "keycloak",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 0.5,
+      "cpu_max_percent": 14.0,
+      "mem_max_mib": 591.6
+    },
+    {
+      "name": "keycloak",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 0.2,
+      "cpu_max_percent": 4.8,
+      "mem_max_mib": 591.6
+    },
+    {
+      "name": "keycloak",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 0.6,
+      "cpu_max_percent": 5.6,
+      "mem_max_mib": 591.6
+    },
+    {
+      "name": "keycloak",
+      "phase": "warmup",
+      "samples": 23,
+      "cpu_mean_percent": 1.6,
+      "cpu_max_percent": 9.2,
+      "mem_max_mib": 591.6
+    },
+    {
+      "name": "redis",
+      "phase": "nominal",
+      "samples": 60,
+      "cpu_mean_percent": 9.3,
+      "cpu_max_percent": 51.2,
+      "mem_max_mib": 18.2
+    },
+    {
+      "name": "redis",
+      "phase": "peak",
+      "samples": 60,
+      "cpu_mean_percent": 10.6,
+      "cpu_max_percent": 21.6,
+      "mem_max_mib": 25.2
+    },
+    {
+      "name": "redis",
+      "phase": "recovery",
+      "samples": 60,
+      "cpu_mean_percent": 8.8,
+      "cpu_max_percent": 16.3,
+      "mem_max_mib": 19.7
+    },
+    {
+      "name": "redis",
+      "phase": "warmup",
+      "samples": 23,
+      "cpu_mean_percent": 5.9,
+      "cpu_max_percent": 14.9,
+      "mem_max_mib": 16.9
+    }
+  ],
+  "io": {
+    "warmup": {
+      "database": {
+        "io_pressure_some_percent": 0.26,
+        "io_pressure_full_percent": 0.26,
+        "write_mib_s": 0.07,
+        "write_iops": 78.05
+      },
+      "redis": {
+        "io_pressure_some_percent": 0.12,
+        "io_pressure_full_percent": 0.12,
+        "write_mib_s": 0.34,
+        "write_iops": 85.86,
+        "aof_delayed_fsync": 0.0
+      },
+      "vm": {
+        "io_pressure_some_percent": 0.48,
+        "io_pressure_full_percent": 0.45
+      },
+      "disk": {
+        "device": "vda",
+        "writes_per_s": 386.08,
+        "write_mean_ms": 0.137,
+        "flushes_per_s": 0.02,
+        "flush_mean_ms": 12677.0,
+        "utilisation_percent": 3.82
+      },
+      "postgres_wal": {
+        "syncs_per_s": 76.59,
+        "sync_mean_ms": 0.231,
+        "writes_per_s": 76.6,
+        "write_mean_ms": 0.02
+      },
+      "postgres_notify_queue_usage_max": 0.0,
+      "postgres_waits": {
+        "snapshots": 240,
+        "active_sessions_mean": 0.08,
+        "by_event": {
+          "CPU:CPU": 0.05,
+          "IO:WalSync": 0.03,
+          "Client:ClientRead": 0.01
+        }
+      },
+      "redis_fsync": {
+        "seconds_over_1ms": 119,
+        "max_ms": 33,
+        "p50_ms": 2,
+        "p95_ms": 8
+      }
+    },
+    "nominal": {
+      "database": {
+        "io_pressure_some_percent": 0.43,
+        "io_pressure_full_percent": 0.43,
+        "write_mib_s": 0.13,
+        "write_iops": 161.29
+      },
+      "redis": {
+        "io_pressure_some_percent": 0.21,
+        "io_pressure_full_percent": 0.21,
+        "write_mib_s": 0.71,
+        "write_iops": 180.46,
+        "aof_delayed_fsync": 0.0
+      },
+      "vm": {
+        "io_pressure_some_percent": 1.01,
+        "io_pressure_full_percent": 0.96
+      },
+      "disk": {
+        "device": "vda",
+        "writes_per_s": 803.05,
+        "write_mean_ms": 0.113,
+        "flushes_per_s": 0.45,
+        "flush_mean_ms": 967.669,
+        "utilisation_percent": 7.33
+      },
+      "postgres_wal": {
+        "syncs_per_s": 160.63,
+        "sync_mean_ms": 0.192,
+        "writes_per_s": 160.68,
+        "write_mean_ms": 0.014
+      },
+      "postgres_notify_queue_usage_max": 0.0,
+      "postgres_waits": {
+        "snapshots": 600,
+        "active_sessions_mean": 0.16,
+        "by_event": {
+          "CPU:CPU": 0.12,
+          "IO:WalSync": 0.03,
+          "Client:ClientRead": 0.01
+        }
+      },
+      "redis_fsync": {
+        "seconds_over_1ms": 300,
+        "max_ms": 44,
+        "p50_ms": 2,
+        "p95_ms": 13
+      }
+    },
+    "peak": {
+      "database": {
+        "io_pressure_some_percent": 4.25,
+        "io_pressure_full_percent": 4.12,
+        "write_mib_s": 0.98,
+        "write_iops": 484.68
+      },
+      "redis": {
+        "io_pressure_some_percent": 0.61,
+        "io_pressure_full_percent": 0.61,
+        "write_mib_s": 2.61,
+        "write_iops": 666.85,
+        "aof_delayed_fsync": 0.0
+      },
+      "vm": {
+        "io_pressure_some_percent": 10.47,
+        "io_pressure_full_percent": 9.62
+      },
+      "disk": {
+        "device": "vda",
+        "writes_per_s": 2671.42,
+        "write_mean_ms": 0.374,
+        "flushes_per_s": 1.02,
+        "flush_mean_ms": 1474.327,
+        "utilisation_percent": 58.98
+      },
+      "postgres_wal": {
+        "syncs_per_s": 468.61,
+        "sync_mean_ms": 0.74,
+        "writes_per_s": 468.81,
+        "write_mean_ms": 0.121
+      },
+      "postgres_notify_queue_usage_max": 0.0,
+      "postgres_waits": {
+        "snapshots": 600,
+        "active_sessions_mean": 2.28,
+        "by_event": {
+          "Lock:object": 0.95,
+          "CPU:CPU": 0.83,
+          "IO:WalSync": 0.36,
+          "Client:ClientRead": 0.06,
+          "IO:WalWrite": 0.04,
+          "LWLock:WALWrite": 0.03,
+          "LWLock:BufferContent": 0.01,
+          "LWLock:WALInsert": 0.0
+        }
+      },
+      "redis_fsync": {
+        "seconds_over_1ms": 300,
+        "max_ms": 877,
+        "p50_ms": 10,
+        "p95_ms": 83
+      }
+    },
+    "recovery": {
+      "database": {
+        "io_pressure_some_percent": 0.73,
+        "io_pressure_full_percent": 0.73,
+        "write_mib_s": 1.43,
+        "write_iops": 265.36
+      },
+      "redis": {
+        "io_pressure_some_percent": 0.23,
+        "io_pressure_full_percent": 0.23,
+        "write_mib_s": 0.73,
+        "write_iops": 185.47,
+        "aof_delayed_fsync": 0.0
+      },
+      "vm": {
+        "io_pressure_some_percent": 1.52,
+        "io_pressure_full_percent": 1.44
+      },
+      "disk": {
+        "device": "vda",
+        "writes_per_s": 827.17,
+        "write_mean_ms": 0.176,
+        "flushes_per_s": 0.69,
+        "flush_mean_ms": 649.797,
+        "utilisation_percent": 9.84
+      },
+      "postgres_wal": {
+        "syncs_per_s": 164.57,
+        "sync_mean_ms": 0.303,
+        "writes_per_s": 164.64,
+        "write_mean_ms": 0.015
+      },
+      "postgres_notify_queue_usage_max": 0.0,
+      "postgres_waits": {
+        "snapshots": 600,
+        "active_sessions_mean": 0.2,
+        "by_event": {
+          "CPU:CPU": 0.14,
+          "IO:WalSync": 0.04,
+          "Client:ClientRead": 0.02,
+          "Lock:object": 0.01,
+          "IO:WalWrite": 0.0
+        }
+      },
+      "redis_fsync": {
+        "seconds_over_1ms": 295,
+        "max_ms": 110,
+        "p50_ms": 2,
+        "p95_ms": 11
+      }
+    }
+  },
+  "monitor_errors": [],
+  "actuator_errors": 0,
+  "actuator_error_samples": []
+}

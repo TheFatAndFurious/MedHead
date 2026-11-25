@@ -18,10 +18,6 @@ public class OutboxPublicationService {
 		this.metrics = metrics;
 	}
 
-	public boolean hasPending() {
-		return repository.hasPending();
-	}
-
 	/**
 	 * Publishes up to {@code limit} pending events in one transaction: one locking SELECT, one Redis
 	 * pipeline, one UPDATE and one commit. If anything fails, no event of the batch is marked published

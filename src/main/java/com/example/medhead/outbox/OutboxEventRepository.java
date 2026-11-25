@@ -25,7 +25,4 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
 	@Modifying(flushAutomatically = true, clearAutomatically = true)
 	@Query("update OutboxEvent e set e.publishedAt = :publishedAt where e.id in :ids")
 	int markPublished(@Param("ids") Collection<UUID> ids, @Param("publishedAt") Instant publishedAt);
-
-	@Query(value = "select exists (select 1 from event_outbox where published_at is null)", nativeQuery = true)
-	boolean hasPending();
 }

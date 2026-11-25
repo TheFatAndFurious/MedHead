@@ -5,7 +5,6 @@ import com.example.medhead.hospital.application.ReservedBed;
 import com.example.medhead.hospital.application.ReserveNearestAvailableBedService;
 import io.lettuce.core.SslVerifyMode;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.postgresql.PGConnection;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +28,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -38,7 +38,6 @@ import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -90,10 +89,16 @@ class OutboxPublicationIntegrationTest {
 	private MeterRegistry registry;
 	@Autowired
 	private DataSourceProperties database;
+	@Autowired
+	private OutboxWriter writer;
+	@Autowired
+	private OutboxWakeUp wakeUp;
 
 	@BeforeEach
-	void setUp() {
+	void setUp() throws InterruptedException {
 		cleanUp();
+		// Forget wake-ups left by reservations of other tests.
+		wakeUp.await(0);
 	}
 
 	@AfterEach
@@ -210,63 +215,55 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	@Test
-	void notifiesOnlyAfterCommitAndNeverAfterRollback() throws Exception {
-		try (Connection connection = notificationsDataSource().getConnection()) {
-			connection.createStatement().execute("LISTEN medhead_outbox");
-			PGConnection postgres = connection.unwrap(PGConnection.class);
-			TransactionTemplate transaction = new TransactionTemplate(transactionManager);
-			transaction.executeWithoutResult(status -> {
-				insertEvent();
-				try {
-					assertThat(postgres.getNotifications(100)).isEmpty();
-				} catch (java.sql.SQLException exception) {
-					throw new IllegalStateException(exception);
-				}
-			});
-			assertThat(postgres.getNotifications(2000)).hasSize(1);
-			transaction.executeWithoutResult(status -> {
-				insertEvent();
-				status.setRollbackOnly();
-			});
-			assertThat(postgres.getNotifications(100)).isEmpty();
-		}
+	void wakesTheDispatcherOnlyAfterCommitAndNeverAfterRollback() throws Exception {
+		TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+		transaction.executeWithoutResult(status -> {
+			writer.append(testEvent());
+			assertThat(awaitWakeUp(100)).isFalse();
+		});
+		assertThat(wakeUp.await(2000)).isTrue();
+		transaction.executeWithoutResult(status -> {
+			writer.append(testEvent());
+			status.setRollbackOnly();
+		});
+		assertThat(wakeUp.await(100)).isFalse();
+		assertThatThrownBy(() -> writer.append(testEvent())).isInstanceOf(IllegalTransactionStateException.class);
 	}
 
 	@Test
-	void sleepsWithoutRepeatedOutboxReadsAndWakesOnInsertion() {
+	void sleepsWithoutRepeatedOutboxReadsAndWakesAfterALocalCommit() {
 		long empty = registry.get("outbox.select.duration").tag("outcome", "empty").timer().count();
-		try (OutboxNotificationListener listener = listener()) {
-			listener.start();
+		// A long poll interval: only the in-memory wake-up can publish within the test timeout.
+		try (OutboxDispatcher dispatcher = dispatcher(10_000)) {
+			dispatcher.start();
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
 					assertThat(registry.get("outbox.select.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
 			await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
 					assertThat(registry.get("outbox.select.duration").tag("outcome", "empty").timer().count()).isEqualTo(empty + 1));
-			insertEvent();
+			appendCommittedEvent();
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
 			assertThat(records()).hasSize(1);
 		}
-		await().atMost(Duration.ofSeconds(2)).until(() -> listenerPid() == null);
 	}
 
 	@Test
-	void drainsMultipleBatchesOnStartupWithoutNeedingANotification() {
+	void drainsMultipleBatchesOnStartupWithoutNeedingAWakeUp() {
 		for (int i = 0; i < 5; i++) insertEvent();
-		try (OutboxNotificationListener listener = listener()) {
-			listener.start();
+		try (OutboxDispatcher dispatcher = dispatcher(10_000)) {
+			dispatcher.start();
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
 			assertThat(records()).hasSize(5);
 		}
 	}
 
 	@Test
-	void reconnectsAndCatchesUpOnEventsInsertedDuringTheDisconnection() {
-		try (OutboxNotificationListener listener = listener()) {
-			listener.start();
-			await().atMost(Duration.ofSeconds(3)).until(() -> listenerPid() != null);
-			int oldPid = listenerPid();
-			assertThat(jdbc.queryForObject("select pg_terminate_backend(?)", Boolean.class, oldPid)).isTrue();
+	void pollsForEventsCommittedWithoutAWakeUp() {
+		double empty = count("outbox.select.duration", "empty");
+		try (OutboxDispatcher dispatcher = dispatcher(200)) {
+			dispatcher.start();
+			await().atMost(Duration.ofSeconds(3)).until(() -> count("outbox.select.duration", "empty") > empty);
+			// Written outside OutboxWriter, as another instance would: no local wake-up.
 			insertEvent();
-			await().atMost(Duration.ofSeconds(3)).until(() -> listenerPid() != null && listenerPid() != oldPid);
 			await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(pendingCount()).isZero());
 			assertThat(records()).hasSize(1);
 		}
@@ -280,8 +277,8 @@ class OutboxPublicationIntegrationTest {
 				check (event_type <> 'OutboxTest' or published_at is null)
 				""");
 		double errors = count("outbox.batch.duration", "error");
-		try (OutboxNotificationListener listener = listener()) {
-			listener.start();
+		try (OutboxDispatcher dispatcher = dispatcher(10_000)) {
+			dispatcher.start();
 			await().atMost(Duration.ofSeconds(3)).until(() ->
 					count("outbox.batch.duration", "error") > errors);
 			jdbc.execute("alter table event_outbox drop constraint test_reject_publication");
@@ -292,17 +289,13 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	@Test
-	void retriesRowsLockedByAnotherPublisherWithoutWaitingForAnotherInsertion() throws Exception {
+	void pollsForRowsReleasedByAnotherPublisherThatRolledBack() throws Exception {
 		OutboxEvent event = insertEvent();
-		try (Connection locking = notificationsDataSource().getConnection();
-				OutboxNotificationListener listener = listener()) {
-			locking.setAutoCommit(false);
-			try (var statement = locking.prepareStatement("select id from event_outbox where id = ? for update")) {
-				statement.setObject(1, event.getId());
-				statement.executeQuery().close();
-			}
+		try (Connection locking = separateConnection();
+				OutboxDispatcher dispatcher = dispatcher(50)) {
+			lock(locking, event);
 			double empty = count("outbox.select.duration", "empty");
-			listener.start();
+			dispatcher.start();
 			await().atMost(Duration.ofSeconds(3)).until(() ->
 					count("outbox.select.duration", "empty") > empty);
 			assertThat(pendingCount()).isEqualTo(1);
@@ -312,26 +305,51 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	@Test
-	void wakesOnANotificationInsteadOfWaitingTheRetryDelayWhileOtherRowsAreLocked() throws Exception {
+	void wakesAfterALocalCommitWhileOtherRowsAreLocked() throws Exception {
 		OutboxEvent locked = insertEvent();
-		try (Connection locking = notificationsDataSource().getConnection();
-				// A long retry delay: only a notification can wake the publisher within the test timeout.
-				OutboxNotificationListener listener = listener(10_000)) {
-			locking.setAutoCommit(false);
-			try (var statement = locking.prepareStatement("select id from event_outbox where id = ? for update")) {
-				statement.setObject(1, locked.getId());
-				statement.executeQuery().close();
-			}
+		try (Connection locking = separateConnection();
+				OutboxDispatcher dispatcher = dispatcher(10_000)) {
+			lock(locking, locked);
 			double empty = count("outbox.select.duration", "empty");
-			listener.start();
+			dispatcher.start();
 			await().atMost(Duration.ofSeconds(3)).until(() -> count("outbox.select.duration", "empty") > empty);
 
-			OutboxEvent committed = insertEvent();
+			OutboxEvent committed = appendCommittedEvent();
 
 			await().atMost(Duration.ofSeconds(3)).until(() -> jdbc.queryForObject(
 					"select published_at is not null from event_outbox where id = ?", Boolean.class, committed.getId()));
 			assertThat(pendingCount()).isEqualTo(1);
 			locking.rollback();
+		}
+	}
+
+	@Test
+	void reservationsNoLongerNotifyInTheirTransaction() {
+		assertThat(jdbc.queryForObject(
+				"select count(*) from pg_trigger where tgrelid = 'event_outbox'::regclass and not tgisinternal", Integer.class))
+				.isZero();
+	}
+
+	private boolean awaitWakeUp(long timeout) {
+		try {
+			return wakeUp.await(timeout);
+		} catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException(exception);
+		}
+	}
+
+	private OutboxEvent appendCommittedEvent() {
+		OutboxEvent event = testEvent();
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> writer.append(event));
+		return event;
+	}
+
+	private static void lock(Connection connection, OutboxEvent event) throws java.sql.SQLException {
+		connection.setAutoCommit(false);
+		try (var statement = connection.prepareStatement("select id from event_outbox where id = ? for update")) {
+			statement.setObject(1, event.getId());
+			statement.executeQuery().close();
 		}
 	}
 
@@ -491,27 +509,13 @@ class OutboxPublicationIntegrationTest {
 		return event;
 	}
 
-	private OutboxNotificationListener listener() {
-		return listener(50);
+	private OutboxDispatcher dispatcher(long pollInterval) {
+		return new OutboxDispatcher(new OutboxPublisher(publicationService, 2, metrics), wakeUp, pollInterval, 50);
 	}
 
-	private OutboxNotificationListener listener(long retryDelay) {
-		return new OutboxNotificationListener(notificationsDataSource(),
-				new OutboxPublisher(publicationService, 2, metrics), publicationService, retryDelay);
-	}
-
-	private DriverManagerDataSource notificationsDataSource() {
-		DriverManagerDataSource source = new DriverManagerDataSource(
-				database.determineUrl(), database.determineUsername(), database.determinePassword());
-		Properties properties = new Properties();
-		properties.setProperty("ApplicationName", "medhead-outbox-listener-test");
-		source.setConnectionProperties(properties);
-		return source;
-	}
-
-	private Integer listenerPid() {
-		return jdbc.queryForObject("select max(pid) from pg_stat_activity where application_name = 'medhead-outbox-listener-test'",
-				Integer.class);
+	private Connection separateConnection() throws java.sql.SQLException {
+		return new DriverManagerDataSource(
+				database.determineUrl(), database.determineUsername(), database.determinePassword()).getConnection();
 	}
 
 	private ReservedBed reserveBed() {
