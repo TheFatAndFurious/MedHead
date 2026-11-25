@@ -246,9 +246,15 @@ Dans `outbox-metrics.csv`, chaque ligne correspond à une métrique et un résul
 Pour le débit de publication, additionner les `total` de `outbox.batch.size`
 (`full` et `empty`) et les rapporter à la durée de l'intervalle. Comparer la
 durée des lots à leur taille et au temps d'attente `outbox.batch.gap`, puis
-les durées de sélection, du pipeline Redis et de l'`UPDATE`. Avec le réveil par notification, le gap inclut l'attente de travail
-quand l'outbox est vide ; il doit être très court entre deux lots complets.
-Il peut aussi inclure l'attente avant une nouvelle tentative après erreur.
+les durées de sélection, du pipeline Redis et de l'`UPDATE`. Avec le réveil
+par notification, le gap inclut l'attente de travail quand l'outbox est vide ;
+il doit être très court entre deux lots complets. Il peut aussi inclure
+l'attente avant une nouvelle tentative après erreur, ou l'attente bornée
+d'une notification quand des lignes en attente sont verrouillées par un autre
+publieur. Un gap maximal égal à `MEDHEAD_OUTBOX_RETRY_DELAY` sans erreur ni
+second publieur signale une attente inutile : c'était le cas avant le
+correctif de #40, qui retardait d'environ une seconde les événements validés
+pendant un lot.
 Le reste de la durée d'un passage inclut les traitements Java,
 l'ouverture de transaction, le flush et le commit ; ce n'est pas une mesure
 isolée du commit. Les relevés HTTP sont successifs et peuvent chevaucher les

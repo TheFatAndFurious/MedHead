@@ -183,9 +183,12 @@ jusqu'à épuisement, puis reste bloqué en attente d'une notification, sans
 interrogation périodique de la table. Il s'abonne avant de lire les événements
 déjà présents au démarrage ou après une reconnexion.
 `MEDHEAD_OUTBOX_BATCH_SIZE` (de 1 à 1 000) règle la taille des lots.
-`MEDHEAD_OUTBOX_RETRY_DELAY` (millisecondes, 1 000 par défaut) règle uniquement
-l'attente avant une nouvelle tentative après une erreur ou lorsqu'un événement
-en attente est verrouillé par un autre publieur. Il remplace l'ancien réglage
+`MEDHEAD_OUTBOX_RETRY_DELAY` (millisecondes, 1 000 par défaut) règle l'attente
+avant une nouvelle tentative après une erreur. Si des événements restent en
+attente après un lot incomplet, soit ils ont été validés pendant le lot et leur
+notification est déjà arrivée, soit un autre publieur les verrouille et pourrait
+annuler sans notifier : le dispatcher attend alors une notification, au plus
+pendant ce délai. Il remplace l'ancien réglage
 `MEDHEAD_OUTBOX_POLL_DELAY`.
 `MEDHEAD_OUTBOX_ENABLED=false` suspend la publication tout en conservant
 l'enregistrement des réservations et des événements dans PostgreSQL.

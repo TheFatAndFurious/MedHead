@@ -312,6 +312,30 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	@Test
+	void wakesOnANotificationInsteadOfWaitingTheRetryDelayWhileOtherRowsAreLocked() throws Exception {
+		OutboxEvent locked = insertEvent();
+		try (Connection locking = notificationsDataSource().getConnection();
+				// A long retry delay: only a notification can wake the publisher within the test timeout.
+				OutboxNotificationListener listener = listener(10_000)) {
+			locking.setAutoCommit(false);
+			try (var statement = locking.prepareStatement("select id from event_outbox where id = ? for update")) {
+				statement.setObject(1, locked.getId());
+				statement.executeQuery().close();
+			}
+			double empty = count("outbox.select.duration", "empty");
+			listener.start();
+			await().atMost(Duration.ofSeconds(3)).until(() -> count("outbox.select.duration", "empty") > empty);
+
+			OutboxEvent committed = insertEvent();
+
+			await().atMost(Duration.ofSeconds(3)).until(() -> jdbc.queryForObject(
+					"select published_at is not null from event_outbox where id = ?", Boolean.class, committed.getId()));
+			assertThat(pendingCount()).isEqualTo(1);
+			locking.rollback();
+		}
+	}
+
+	@Test
 	void doesNotPublishAnUncommittedOrRolledBackReservation() {
 		TransactionTemplate transaction = new TransactionTemplate(transactionManager);
 		transaction.executeWithoutResult(status -> {
@@ -468,8 +492,12 @@ class OutboxPublicationIntegrationTest {
 	}
 
 	private OutboxNotificationListener listener() {
+		return listener(50);
+	}
+
+	private OutboxNotificationListener listener(long retryDelay) {
 		return new OutboxNotificationListener(notificationsDataSource(),
-				new OutboxPublisher(publicationService, 2, metrics), publicationService, 50);
+				new OutboxPublisher(publicationService, 2, metrics), publicationService, retryDelay);
 	}
 
 	private DriverManagerDataSource notificationsDataSource() {
