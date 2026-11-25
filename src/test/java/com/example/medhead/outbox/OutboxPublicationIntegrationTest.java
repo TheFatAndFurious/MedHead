@@ -145,13 +145,45 @@ class OutboxPublicationIntegrationTest {
 
 		new OutboxPublisher(publicationService, 3, metrics).publishPending();
 
+		// The stream was deleted before the test: both groups are recreated once, never checked per event.
 		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count() - createdGroups).isEqualTo(2);
-		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "existing").timer().count() - existingGroups).isEqualTo(2);
+		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "existing").timer().count() - existingGroups).isZero();
 		assertThat(registry.get("outbox.redis.add.duration").tag("outcome", "success").timer().count() - sent).isEqualTo(2);
 		assertThat(registry.get("outbox.select.duration").tag("outcome", "found").timer().count() - found).isEqualTo(2);
 		assertThat(registry.get("outbox.event.duration").tag("outcome", "published").timer().count() - published).isEqualTo(2);
 		assertThat(registry.get("outbox.event.duration").tag("outcome", "empty").timer().count() - empty).isEqualTo(1);
 		assertThat(pendingCount()).isZero();
+	}
+
+	@Test
+	void createsConsumerGroupsOnceAndRecreatesThemWhenTheStreamDisappears() {
+		publisher.publish(testEvent());
+		double groupCalls = groupCalls();
+		double missing = registry.get("outbox.redis.add.duration").tag("outcome", "missing").timer().count();
+
+		for (int i = 0; i < 5; i++) {
+			publisher.publish(testEvent());
+		}
+		assertThat(groupCalls() - groupCalls).isZero();
+
+		redis.delete(STREAM);
+		publisher.publish(testEvent());
+
+		assertThat(registry.get("outbox.redis.add.duration").tag("outcome", "missing").timer().count() - missing).isEqualTo(1);
+		assertThat(registry.get("outbox.redis.group.duration").tag("outcome", "created").timer().count()).isPositive();
+		assertThat(redis.opsForStream().groups(STREAM)).extracting(group -> group.groupName())
+				.containsExactlyInAnyOrder("outbox-consumers", "outbox-audit");
+		assertThat(records()).hasSize(1);
+		publisher.publish(testEvent());
+		assertThat(groupCalls() - groupCalls).isEqualTo(2);
+	}
+
+	private double groupCalls() {
+		return registry.get("outbox.redis.group.duration").timers().stream().mapToLong(timer -> timer.count()).sum();
+	}
+
+	private static OutboxEvent testEvent() {
+		return new OutboxEvent(UUID.randomUUID(), "OutboxTest", UUID.randomUUID(), Instant.now(), "{}");
 	}
 
 	@Test
