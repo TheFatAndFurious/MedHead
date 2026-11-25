@@ -74,6 +74,26 @@ quand la base n'est plus le facteur limitant :
 PERF_DATABASE_CPUS=4 python3 tests/performance/run.py success
 ```
 
+### Variantes de diagnostic : synchronisation disque
+
+Deux variables désactivent l'attente de l'écriture sur disque, pour vérifier si
+elle limite le débit. **Elles servent uniquement au diagnostic** : elles
+acceptent de perdre des données confirmées en cas de panne, et ne sont pas
+proposées dans le Compose de démonstration.
+
+| Variable | Défaut | Variante | Ce qui est perdu en cas d'arrêt brutal |
+| --- | --- | --- | --- |
+| `PERF_SYNCHRONOUS_COMMIT` | `on` | `off` | Les transactions PostgreSQL validées depuis moins de 600 ms environ, réservations comprises. Un événement déjà envoyé à Redis peut annoncer une réservation perdue |
+| `PERF_REDIS_APPENDFSYNC` | `always` | `everysec` | Environ une seconde d'événements Redis, déjà marqués publiés dans l'outbox et donc jamais renvoyés |
+
+```sh
+PERF_SYNCHRONOUS_COMMIT=off python3 tests/performance/run.py success --peak-rate 400
+PERF_REDIS_APPENDFSYNC=everysec python3 tests/performance/run.py success --peak-rate 400
+```
+
+La valeur effective figure dans le `compose.yaml` copié dans le dossier de
+résultats.
+
 `verdict.json` enregistre les limites effectives de chaque conteneur.
 Les autres réglages de l'API restent ceux par défaut (Tomcat, pool HikariCP
 de 10 connexions, lots outbox de 100 événements). k6 tourne sur l'hôte, sans
@@ -217,7 +237,7 @@ verrou. Toutes les cinq secondes, le runner lance trois `docker compose exec`
 | --- | --- | --- |
 | Conteneurs `database` et `redis` | Pression d'entrées-sorties du cgroup (`io.pressure`, temps cumulé pendant lequel au moins une tâche attend le disque) et volume écrit (`io.stat`) | `io.csv` |
 | VM Docker | Pression d'entrées-sorties globale (`/proc/pressure/io`) et compteurs du disque (`/proc/diskstats` : écritures, vidages de cache `flush`, temps passé, occupation) | `io.csv` |
-| PostgreSQL | `pg_stat_wal` : écritures et synchronisations du journal, avec leur durée (`track_wal_io_timing=on`, activé seulement dans le Compose de performance) | `io.csv` |
+| PostgreSQL | `pg_stat_wal` : écritures et synchronisations du journal, avec leur durée (`track_wal_io_timing=on`, activé seulement dans le Compose de performance) ; remplissage de la file des notifications `NOTIFY` (`pg_notification_queue_usage()`, de 0 à 1) | `io.csv` |
 | PostgreSQL | Dix instantanés de `pg_stat_activity` à 0,2 s d'intervalle : nombre de sessions actives par événement d'attente (`IO:WalSync`, `LWLock:WALWrite`, `Lock:…`, `CPU` si aucune attente) | `pg-waits.csv` |
 | Redis | `LATENCY HISTORY aof-fsync-always` et `aof-write` : pour chaque seconde, la synchronisation ou l'écriture AOF la plus lente, si elle atteint 1 ms (le runner règle `latency-monitor-threshold` à 1 ms et vide l'historique au départ) ; compteur `aof_delayed_fsync` | `redis-latency.csv`, `io.csv` |
 

@@ -42,8 +42,9 @@ class ParsingTest(unittest.TestCase):
 
     def test_postgres_output_sums_waits_over_snapshots(self):
         wal, waits = io_usage.parse_postgres(
-            'wal|10|5|4|2.5|8.0\nwait|IO|WALSync|2\nsleep\nwait|IO|WALSync|1\nwait|CPU|CPU|3\nsleep\n')
+            'wal|10|5|4|2.5|8.0\nnotify|0.25\nwait|IO|WALSync|2\nsleep\nwait|IO|WALSync|1\nwait|CPU|CPU|3\nsleep\n')
         self.assertEqual(wal['wal_sync'], 4)
+        self.assertEqual(wal['notify_queue_usage'], 0.25)
         self.assertEqual(wal['wal_sync_time_ms'], 8.0)
         self.assertEqual(waits, {('IO', 'WALSync'): 3, ('CPU', 'CPU'): 3})
 
@@ -66,6 +67,14 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary['peak']['postgres_wal']['sync_mean_ms'], 2)
         # 2.5 s of stall in 10 s.
         self.assertEqual(summary['peak']['database']['io_pressure_some_percent'], 25)
+
+    def test_notify_queue_usage_is_the_highest_sample_of_the_phase(self):
+        rows = [counter(101, 'postgres', 'notify_queue_usage', 0.1),
+                counter(106, 'postgres', 'notify_queue_usage', 0.4),
+                counter(111, 'postgres', 'notify_queue_usage', 0.2)]
+        summary = io_usage.summarize(rows, [], [], PROFILE, 100, phase_at)
+        self.assertEqual(summary['nominal']['postgres_notify_queue_usage_max'], 0.4)
+        self.assertEqual(summary['peak']['postgres_notify_queue_usage_max'], 0.2)
 
     def test_busiest_disk_is_reported(self):
         rows = [counter(101, 'disk:vda', 'writes', 0), counter(106, 'disk:vda', 'writes', 100),

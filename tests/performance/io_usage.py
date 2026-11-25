@@ -82,7 +82,9 @@ def parse_latency_history(text):
 
 def wait_query():
     statements = ['SELECT \'wal\', wal_records, wal_write, wal_sync, wal_write_time, '
-                  'wal_sync_time FROM pg_stat_wal;']
+                  'wal_sync_time FROM pg_stat_wal;',
+                  # Fraction (0 to 1) of the NOTIFY queue not yet read by every listener.
+                  "SELECT 'notify', pg_notification_queue_usage();"]
     # Separate statements: each one is its own transaction and reads a fresh snapshot.
     for _ in range(WAIT_SNAPSHOTS):
         statements.append(
@@ -101,6 +103,8 @@ def parse_postgres(text):
             wal = {'wal_records': int(parts[1]), 'wal_write': int(parts[2]),
                    'wal_sync': int(parts[3]), 'wal_write_time_ms': float(parts[4]),
                    'wal_sync_time_ms': float(parts[5])}
+        elif parts[0] == 'notify':
+            wal['notify_queue_usage'] = float(parts[1])
         elif parts[0] == 'wait':
             key = (parts[1], parts[2])
             waits[key] = waits.get(key, 0) + int(parts[3])
@@ -180,6 +184,10 @@ def summarize(io_rows, wait_rows, latency_rows, profile, start_epoch, phase_at):
             if seconds > 0:
                 deltas[key] = (inside[-1][1] - first[1], seconds)
         summary[name] = derived(deltas)
+        # A gauge, not a counter: keep the highest sample of the phase.
+        notify = [value for epoch, value in series.get(('postgres', 'notify_queue_usage'), [])
+                  if phase(epoch) == name]
+        summary[name]['postgres_notify_queue_usage_max'] = max(notify) if notify else None
         summary[name]['postgres_waits'] = wait_shares(
             [row for row in wait_rows if phase(row['epoch']) == name])
         summary[name]['redis_fsync'] = latency_summary(
