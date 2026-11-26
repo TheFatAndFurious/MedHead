@@ -134,6 +134,48 @@ l'hôpital, `reservationId`, `reservedAt` et le nombre de lits disponibles
 reste inchangée. Des critères invalides ou une spécialité inconnue renvoient
 `400 Bad Request` ; l'absence de lit disponible renvoie `404 Not Found`.
 
+### Réservation selon le trajet routier
+
+`POST /api/v1/hospitals/reservations/by-road` accepte les mêmes coordonnées,
+la même spécialité et le même rôle `REGULATEUR`. PostgreSQL filtre les hôpitaux
+selon la spécialité et les lits libres. OSRM calcule les trajets depuis les
+coordonnées reçues et MedHead classe les hôpitaux par durée estimée en voiture.
+La réponse contient la distance **routière** en mètres dans `distanceMeters`
+et la durée en secondes dans `travelDurationSeconds`. L'appel à OSRM se fait
+avant la transaction de réservation. La clé d'idempotence couvre aussi le
+choix de la route.
+
+- `404 Not Found` indique qu'aucun lit n'est disponible.
+- `422 Unprocessable Content` avec `urn:problem:no-road-route` indique
+  qu'aucun hôpital éligible n'est joignable par le réseau routier chargé.
+- `503 Service Unavailable` avec `urn:problem:road-routing-unavailable`
+  indique qu'OSRM est indisponible ou que sa réponse est inexploitable.
+  Le client peut alors choisir explicitement la route PostGIS.
+
+Pour démarrer OSRM localement, préparer une fois le réseau routier du Grand
+Londres. Le graphe prend en charge des coordonnées libres dans la zone
+couverte. L'origine et les hôpitaux doivent se trouver à moins de 1 km du
+segment routier utilisé. Le profil voiture standard utilise des durées sans
+trafic en direct.
+
+```bash
+mkdir -p .local/osrm
+curl --fail --location \
+  --output .local/osrm/london.osm.pbf \
+  https://download.geofabrik.de/europe/united-kingdom/england/greater-london-latest.osm.pbf
+
+MEDHEAD_OSRM_IMAGE=ghcr.io/project-osrm/osrm-backend@sha256:e1929ae2818226284d7ef007329098a30851c11528ab3712bc9c8d68da78278b
+docker run --rm -v "$PWD/.local/osrm:/data" --entrypoint /bin/sh "$MEDHEAD_OSRM_IMAGE" \
+  -ec 'osrm-extract -t 4 -p /opt/car.lua /data/london.osm.pbf && osrm-contract -t 4 /data/london.osrm'
+
+docker compose -f docker-compose.yaml -f docker-compose.osrm.yaml up --build -d
+```
+
+Les données routières proviennent des
+[contributeurs OpenStreetMap](https://www.openstreetmap.org/copyright).
+Avec une API lancée hors de Docker, `MEDHEAD_OSRM_URL` définit l'adresse
+du serveur OSRM et vaut `http://localhost:5000` par défaut.
+
 ### Idempotence des demandes
 
 L'en-tête `Idempotency-Key` est obligatoire : le client génère un UUID par
@@ -176,8 +218,9 @@ Une seule transaction PostgreSQL effectue les quatre écritures :
 
 La décrémentation est conditionnelle (`available_beds > 0`) et verrouille la
 ligne de l'hôpital jusqu'à la fin de la transaction. Si une demande concurrente
-a pris le dernier lit entre la recherche et la mise à jour, le service relance
-la recherche pour réserver dans le prochain hôpital disponible. Une erreur,
+a pris le dernier lit entre la recherche et la mise à jour, le service cherche
+le prochain hôpital disponible. La route PostGIS relance sa requête de proximité.
+La route routière passe au candidat suivant dans le classement OSRM. Une erreur,
 y compris à l'insertion de l'outbox ou de la demande, annule toutes les écritures.
 
 L'outbox contient un UUID d'événement, le type, l'UUID de réservation

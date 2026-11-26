@@ -1,6 +1,8 @@
 package com.example.medhead.hospital.application;
 
 import com.example.medhead.hospital.api.HospitalReservationResponse;
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,11 +13,17 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import tools.jackson.databind.json.JsonMapper;
 import org.springframework.security.test.context.support.WithMockUser;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -23,6 +31,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,6 +56,24 @@ class BedReservationIntegrationTest {
 	private static final String SPECIALTY = "RESERVATION_TEST";
 	private static final String NEAREST_CODE = "TEST-RESERVE-NEAREST";
 	private static final String FARTHER_CODE = "TEST-RESERVE-FARTHER";
+	private static final String ROAD_TABLE = """
+			{"code":"Ok","durations":[[120.5,90.0]],"distances":[[500.0,950.0]],
+			 "destinations":[{"distance":4.5},{"distance":0.0}]}
+			""";
+	private static final AtomicReference<RoutingReply> ROAD_REPLY = new AtomicReference<>();
+	private static final AtomicReference<String> LAST_ROAD_REQUEST = new AtomicReference<>();
+	private static final AtomicInteger ROAD_REQUESTS = new AtomicInteger();
+	private static final HttpServer OSRM = startRoutingServer();
+
+	@DynamicPropertySource
+	static void routingUrl(DynamicPropertyRegistry registry) {
+		registry.add("medhead.osrm.url", () -> "http://127.0.0.1:" + OSRM.getAddress().getPort());
+	}
+
+	@AfterAll
+	static void stopRoutingServer() {
+		OSRM.stop(0);
+	}
 
 	@Autowired
 	private ReserveNearestAvailableBedService reservationService;
@@ -58,6 +86,9 @@ class BedReservationIntegrationTest {
 
 	@BeforeEach
 	void setUp() {
+		ROAD_REPLY.set(new RoutingReply(503, "{}", () -> {}));
+		ROAD_REQUESTS.set(0);
+		LAST_ROAD_REQUEST.set(null);
 		cleanUp();
 		jdbc.update("insert into specialty (code, name) values (?, ?)", SPECIALTY, "Test specialty");
 		jdbc.update("insert into specialty (code, name) values (?, ?)", "RESERVATION_OTHER_TEST", "Other specialty");
@@ -114,6 +145,90 @@ class BedReservationIntegrationTest {
 		assertThat(event.hospitalCode()).isEqualTo(NEAREST_CODE);
 		assertThat(event.specialtyCode()).isEqualTo(SPECIALTY);
 		assertThat(event.occurredAt()).isEqualTo(response.reservedAt());
+	}
+
+	@Test
+	void reservesTheFastestRoadCandidateAndReplaysWithoutCallingOsrmAgain() throws Exception {
+		ROAD_REPLY.set(new RoutingReply(200, ROAD_TABLE, () -> {}));
+		addHospital("TEST-RESERVE-FULL", -0.13, 0, SPECIALTY);
+		UUID key = UUID.randomUUID();
+
+		mockMvc.perform(roadReservationPost(key))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.hospitalCode").value(FARTHER_CODE))
+				.andExpect(jsonPath("$.distanceMeters").value(950.0))
+				.andExpect(jsonPath("$.travelDurationSeconds").value(90.0));
+		assertThat(LAST_ROAD_REQUEST.get()).contains(
+				"/table/v1/driving/-0.1281,51.508;-0.1276,51.5074;-0.14,51.5074",
+				"sources=0", "destinations=1;2", "annotations=duration,distance"
+		);
+
+		ROAD_REPLY.set(new RoutingReply(503, "{}", () -> {}));
+		mockMvc.perform(roadReservationPost(key))
+				.andExpect(status().isCreated())
+				.andExpect(header().string("Idempotent-Replayed", "true"))
+				.andExpect(jsonPath("$.travelDurationSeconds").value(90.0));
+		mockMvc.perform(reservationPost(roadRequestJson(), key))
+				.andExpect(status().isUnprocessableContent())
+				.andExpect(jsonPath("$.type").value("urn:problem:idempotency-key-reused"));
+
+		assertThat(ROAD_REQUESTS.get()).isEqualTo(1);
+		assertThat(availableBeds(NEAREST_CODE)).isEqualTo(3);
+		assertThat(availableBeds(FARTHER_CODE)).isEqualTo(2);
+		assertThat(reservationCount()).isEqualTo(1);
+		assertThat(outboxCount()).isEqualTo(1);
+		assertThat(requestCount()).isEqualTo(1);
+	}
+
+	@Test
+	void reservesTheNextRoadCandidateWhenTheFastestLosesItsLastBedDuringRouting() throws Exception {
+		setAvailability(FARTHER_CODE, 1);
+		ROAD_REPLY.set(new RoutingReply(200, ROAD_TABLE, () -> reservationService.reserveNearest(
+				new ReserveBedCommand(REGULATOR, UUID.randomUUID(), 51.5074, -0.14, SPECIALTY)
+		)));
+
+		mockMvc.perform(roadReservationPost(UUID.randomUUID()))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.hospitalCode").value(NEAREST_CODE))
+				.andExpect(jsonPath("$.travelDurationSeconds").value(120.5));
+		assertThat(availableBeds(FARTHER_CODE)).isZero();
+		assertThat(availableBeds(NEAREST_CODE)).isEqualTo(2);
+		assertThat(reservationCount()).isEqualTo(2);
+		assertThat(outboxCount()).isEqualTo(2);
+	}
+
+	@Test
+	void reportsUnavailableRoutingAndStillAllowsThePostgisRoute() throws Exception {
+		UUID key = UUID.randomUUID();
+		mockMvc.perform(roadReservationPost(key))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(jsonPath("$.type").value("urn:problem:road-routing-unavailable"));
+		assertNoReservationOrEvent();
+
+		mockMvc.perform(reservationPost(requestJson(SPECIALTY), key))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.hospitalCode").value(NEAREST_CODE))
+				.andExpect(jsonPath("$.travelDurationSeconds").doesNotExist());
+	}
+
+	@Test
+	void distinguishesUnreachableHospitalsFromNoAvailableBeds() throws Exception {
+		ROAD_REPLY.set(new RoutingReply(200,
+				"""
+				{"code":"Ok","durations":[[null,60.0]],"distances":[[null,100.0]],
+				 "destinations":[{"distance":4.5},{"distance":1200.0}]}
+				""", () -> {}));
+		mockMvc.perform(roadReservationPost(UUID.randomUUID()))
+				.andExpect(status().isUnprocessableContent())
+				.andExpect(jsonPath("$.type").value("urn:problem:no-road-route"));
+		assertNoReservationOrEvent();
+
+		setAvailability(NEAREST_CODE, 0);
+		setAvailability(FARTHER_CODE, 0);
+		mockMvc.perform(roadReservationPost(UUID.randomUUID()))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.type").value("urn:problem:no-available-hospital"));
+		assertThat(ROAD_REQUESTS.get()).isEqualTo(1);
 	}
 
 	@Test
@@ -373,6 +488,44 @@ class BedReservationIntegrationTest {
 				.header("Idempotency-Key", idempotencyKey.toString())
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(json);
+	}
+
+	private static MockHttpServletRequestBuilder roadReservationPost(UUID key) {
+		return post("/api/v1/hospitals/reservations/by-road")
+				.header("Idempotency-Key", key.toString())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content(roadRequestJson());
+	}
+
+	private static String roadRequestJson() {
+		return """
+				{"latitude":51.508,"longitude":-0.1281,"specialtyCode":"%s"}
+				""".formatted(SPECIALTY);
+	}
+
+	private static HttpServer startRoutingServer() {
+		try {
+			HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+			server.createContext("/table/v1/driving/", exchange -> {
+				try (exchange) {
+					ROAD_REQUESTS.incrementAndGet();
+					LAST_ROAD_REQUEST.set(exchange.getRequestURI().toString());
+					var reply = ROAD_REPLY.get();
+					reply.beforeResponse().run();
+					byte[] body = reply.body().getBytes(StandardCharsets.UTF_8);
+					exchange.getResponseHeaders().set("Content-Type", "application/json");
+					exchange.sendResponseHeaders(reply.status(), body.length);
+					exchange.getResponseBody().write(body);
+				}
+			});
+			server.start();
+			return server;
+		} catch (IOException exception) {
+			throw new UncheckedIOException(exception);
+		}
+	}
+
+	private record RoutingReply(int status, String body, Runnable beforeResponse) {
 	}
 
 	private static String requestJson(String specialtyCode) {

@@ -44,9 +44,23 @@ public class HospitalReservationController {
 			Principal principal
 	) {
 		// With a JWT, the principal name is the token subject (sub claim).
-		ReservationOutcome outcome = reservationService.reserveNearest(
-				request.toCommand(principal.getName(), idempotencyKey)
-		);
+		return response(reservationService.reserveNearest(request.toCommand(principal.getName(), idempotencyKey)));
+	}
+
+	@PostMapping(
+			path = "/reservations/by-road",
+			consumes = MediaType.APPLICATION_JSON_VALUE,
+			produces = MediaType.APPLICATION_JSON_VALUE
+	)
+	public ResponseEntity<HospitalReservationResponse> reserveByRoad(
+			@RequestHeader(IDEMPOTENCY_KEY) UUID idempotencyKey,
+			@Valid @RequestBody HospitalReservationRequest request,
+			Principal principal
+	) {
+		return response(reservationService.reserveByRoad(request.toCommand(principal.getName(), idempotencyKey)));
+	}
+
+	private static ResponseEntity<HospitalReservationResponse> response(ReservationOutcome outcome) {
 		ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.CREATED);
 		if (outcome.replayed()) {
 			response.header(IDEMPOTENT_REPLAYED, "true");

@@ -18,6 +18,7 @@ public record ReservedBed(
 		int totalBeds,
 		int availableBeds,
 		double distanceMeters,
-		String specialtyCode
+		String specialtyCode,
+		Double travelDurationSeconds
 ) {
 }
